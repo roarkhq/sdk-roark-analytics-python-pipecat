@@ -7,6 +7,7 @@ never raised. The observer must never break the call.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -17,10 +18,24 @@ API_KEY_HEADER = "x-roark-api-key"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_UPLOAD_TIMEOUT_SECONDS = 120.0  # WAV PUTs can be large for long calls
 
-# Roark backend is fronted by two AWS Lambda Function URLs — one per handler.
-# Function URLs serve at the root path, so we hit them directly with no suffix.
-DEFAULT_WEBHOOK_URL = "https://nlcq4bwcajeeg36rur3dqxnvum0havyg.lambda-url.us-east-1.on.aws/"
-DEFAULT_UPLOAD_URL_ENDPOINT = "https://auuyplq76m6bbqzxr7vj3sordm0wqbcj.lambda-url.us-east-1.on/"
+# Endpoint URLs are not baked into source — they come from the constructor or
+# env vars. See ``.env.example`` for the production values. This lets the same
+# package run against prod / staging / regional stacks with no code changes,
+# and avoids accidental prod hits from a misconfigured environment.
+ENV_WEBHOOK_URL = "ROARK_WEBHOOK_URL"
+ENV_UPLOAD_URL_ENDPOINT = "ROARK_UPLOAD_URL_ENDPOINT"
+
+
+def _resolve(explicit: str | None, env_var: str) -> str:
+    if explicit is not None:
+        return explicit
+    value = os.environ.get(env_var)
+    if not value:
+        raise ValueError(
+            f"Roark endpoint not configured: pass the corresponding kwarg or set "
+            f"the {env_var} env var (see .env.example for the production value)."
+        )
+    return value
 
 log = logging.getLogger("pipecat_roark.client")
 
@@ -37,13 +52,15 @@ class RoarkClient:
         self,
         *,
         api_key: str,
-        webhook_url: str = DEFAULT_WEBHOOK_URL,
-        upload_url_endpoint: str = DEFAULT_UPLOAD_URL_ENDPOINT,
+        webhook_url: str | None = None,
+        upload_url_endpoint: str | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._api_key = api_key
-        self._webhook_url = webhook_url
-        self._upload_url_endpoint = upload_url_endpoint
+        # Precedence: explicit kwarg > env var. No source-level fallback — we
+        # raise so misconfiguration surfaces at startup instead of mid-call.
+        self._webhook_url = _resolve(webhook_url, ENV_WEBHOOK_URL)
+        self._upload_url_endpoint = _resolve(upload_url_endpoint, ENV_UPLOAD_URL_ENDPOINT)
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 

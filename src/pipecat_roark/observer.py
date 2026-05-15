@@ -77,9 +77,11 @@ class RoarkObserver(BaseObserver):
         interface_type: ``WEB`` (WebRTC) or ``PHONE`` (PSTN). Inferred from
             phone-number presence if omitted.
         roark_webhook_url: Override the Pipecat webhook event endpoint
-            (call-started / call-ended). Defaults to the production Lambda URL.
+            (call-started / call-ended). Falls back to the ``ROARK_WEBHOOK_URL``
+            env var, then to the production Lambda URL.
         roark_upload_url_endpoint: Override the presigned-recording-upload URL
-            endpoint. Defaults to the production Lambda URL.
+            endpoint. Falls back to the ``ROARK_UPLOAD_URL_ENDPOINT`` env var,
+            then to the production Lambda URL.
         record_audio: When True, the observer accumulates PCM frames in memory
             and uploads a WAV to Roark on call-ended. Default True.
         pipecat_call_id: Stable call identifier. Auto-generated if omitted.
