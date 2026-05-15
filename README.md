@@ -12,6 +12,22 @@ pip install pipecat-roark
 
 Requires Python 3.10+ and `pipecat-ai >= 0.0.40`.
 
+## Configuration
+
+The observer reads its endpoint URLs from environment variables. Copy
+`.env.example` and set them however your app loads env (Docker, systemd,
+`python-dotenv`, etc.):
+
+```bash
+ROARK_WEBHOOK_URL=https://...lambda-url.us-east-1.on.aws/
+ROARK_UPLOAD_URL_ENDPOINT=https://...lambda-url.us-east-1.on.aws/
+```
+
+If neither env var nor the corresponding kwarg (`roark_webhook_url` /
+`roark_upload_url_endpoint`) is set, the observer raises at construction
+— this is intentional so misconfigured deployments fail at startup
+instead of mid-call.
+
 ## Usage
 
 ```python
@@ -91,8 +107,8 @@ RoarkObserver(api_key="rk_live_...", agent_id="support-bot-v3", record_audio=Fal
 | `customer_phone_number` | str \| None | `None` | E.164. |
 | `call_direction` | `'INBOUND'` \| `'OUTBOUND'` \| None | inferred | |
 | `interface_type` | `'WEB'` \| `'PHONE'` \| None | inferred from phone numbers | |
-| `roark_webhook_url` | str \| None | Roark Lambda URL | Override the Pipecat webhook endpoint (call-started / call-ended). |
-| `roark_upload_url_endpoint` | str \| None | Roark Lambda URL | Override the recording-upload-URL endpoint. |
+| `roark_webhook_url` | str \| None | reads `$ROARK_WEBHOOK_URL` (required) | Pipecat webhook endpoint (call-started / call-ended). |
+| `roark_upload_url_endpoint` | str \| None | reads `$ROARK_UPLOAD_URL_ENDPOINT` (required) | Recording-upload-URL endpoint. |
 | `record_audio` | bool | `True` | Buffer PCM and upload WAV at end-of-call. |
 | `pipecat_call_id` | str \| None | random UUID | Stable call identifier; useful for idempotency. |
 
