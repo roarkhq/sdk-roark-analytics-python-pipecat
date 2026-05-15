@@ -2,20 +2,24 @@
 
 Lifecycle, in order:
 
-1. ``on_pipeline_started`` — POSTs ``call-started`` to Roark. The agent + call
-   are lazy-registered on the Roark side from this single event (no separate
-   "agent sync" pull exists for self-hosted Pipecat).
-
-2. ``on_push_frame`` — buffers frames in memory:
+1. ``on_push_frame`` — observes every frame transfer between processors:
+     * ``StartFrame`` (first one) → POSTs ``call-started`` to Roark. The agent
+       + call are lazy-registered on the Roark side from this single event
+       (no separate "agent sync" pull exists for self-hosted Pipecat).
      * ``TranscriptionFrame`` (finalized) → transcript entry
      * ``FunctionCallInProgressFrame`` → tool_call_invocation
      * ``FunctionCallResultFrame``     → tool_call_result
      * ``OutputAudioRawFrame`` / ``InputAudioRawFrame`` → PCM buffer (if record_audio)
      * ``EndFrame`` / ``CancelFrame`` → triggers end-of-call flush
 
-3. End-of-call flush:
+2. End-of-call flush:
      a. If audio captured: request presigned upload URL, PUT the WAV.
      b. POST ``call-ended`` with batched transcript + tool calls + s3Key.
+
+``BaseObserver`` only exposes ``on_push_frame`` / ``on_process_frame`` hooks
+— there is no ``on_pipeline_started``. ``StartFrame`` is the pipeline's
+canonical start signal and travels through ``on_push_frame``, so that's
+where we hook call-started.
 
 Failures at every step are logged and swallowed — the observer must never
 raise into the pipeline. Worst case the call appears in Roark with partial
@@ -72,7 +76,10 @@ class RoarkObserver(BaseObserver):
             presence if omitted.
         interface_type: ``WEB`` (WebRTC) or ``PHONE`` (PSTN). Inferred from
             phone-number presence if omitted.
-        roark_base_url: Base URL for Roark's API. Override for staging / self-host.
+        roark_webhook_url: Override the Pipecat webhook event endpoint
+            (call-started / call-ended). Defaults to the production Lambda URL.
+        roark_upload_url_endpoint: Override the presigned-recording-upload URL
+            endpoint. Defaults to the production Lambda URL.
         record_audio: When True, the observer accumulates PCM frames in memory
             and uploads a WAV to Roark on call-ended. Default True.
         pipecat_call_id: Stable call identifier. Auto-generated if omitted.
@@ -89,12 +96,18 @@ class RoarkObserver(BaseObserver):
         customer_phone_number: str | None = None,
         call_direction: CallDirection | None = None,
         interface_type: InterfaceType | None = None,
-        roark_base_url: str = "https://api.roark.ai",
+        roark_webhook_url: str | None = None,
+        roark_upload_url_endpoint: str | None = None,
         record_audio: bool = True,
         pipecat_call_id: str | None = None,
     ) -> None:
         super().__init__()
-        self._client = RoarkClient(api_key=api_key, base_url=roark_base_url)
+        client_kwargs: dict[str, str] = {"api_key": api_key}
+        if roark_webhook_url is not None:
+            client_kwargs["webhook_url"] = roark_webhook_url
+        if roark_upload_url_endpoint is not None:
+            client_kwargs["upload_url_endpoint"] = roark_upload_url_endpoint
+        self._client = RoarkClient(**client_kwargs)
         self._agent_id = agent_id
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
@@ -112,16 +125,24 @@ class RoarkObserver(BaseObserver):
         self._call_started_at: float | None = None  # monotonic seconds
         self._call_started_iso: str | None = None
         self._first_speaker: Literal["agent", "user"] | None = None
+        self._started_posted = False
         self._end_flushed = False
         # Guard for re-entrancy on EndFrame/CancelFrame — a single end may push
         # twice through the pipeline; we only want to flush once.
         self._flush_lock = asyncio.Lock()
+        # Same idea for StartFrame: serialize concurrent first-frame paths.
+        self._start_lock = asyncio.Lock()
 
     # ---------------------------------------------------------------------
     # BaseObserver hooks
     # ---------------------------------------------------------------------
 
-    async def on_pipeline_started(self) -> None:  # type: ignore[override]
+    async def _post_call_started(self) -> None:
+        async with self._start_lock:
+            if self._started_posted:
+                return
+            self._started_posted = True
+
         self._call_started_at = time.monotonic()
         self._call_started_iso = _utc_now_iso()
 
@@ -148,9 +169,18 @@ class RoarkObserver(BaseObserver):
         else:
             payload["interfaceType"] = "WEB"
 
+        log.info(
+            "call-started: pipecatCallId=%s agentId=%s interface=%s direction=%s",
+            self._pipecat_call_id,
+            self._agent_id,
+            payload.get("interfaceType"),
+            payload.get("callDirection"),
+        )
         ok = await self._client.post_call_started(payload)
         if not ok:
             log.warning("call-started POST failed for %s; continuing", self._pipecat_call_id)
+        else:
+            log.debug("call-started POST ok for %s", self._pipecat_call_id)
 
     async def on_push_frame(self, data: FramePushed) -> None:  # type: ignore[override]
         # Heavy frame-type imports are deferred so importing pipecat_roark
@@ -163,10 +193,18 @@ class RoarkObserver(BaseObserver):
             FunctionCallResultFrame,
             InputAudioRawFrame,
             OutputAudioRawFrame,
+            StartFrame,
             TranscriptionFrame,
         )
 
         frame: "Frame" = data.frame
+
+        # StartFrame is Pipecat's canonical pipeline-start signal. We post
+        # call-started on the first one we see; the helper self-guards against
+        # repeats (StartFrame can travel past multiple processors).
+        if isinstance(frame, StartFrame) and not self._started_posted:
+            await self._post_call_started()
+            return
 
         if isinstance(frame, TranscriptionFrame):
             # Pipecat marks transcripts as finalized once the STT has committed.
@@ -192,6 +230,14 @@ class RoarkObserver(BaseObserver):
             return
 
         if isinstance(frame, (EndFrame, CancelFrame)):
+            buf_bytes = len(self._recorder._buf) if self._recorder is not None else 0  # type: ignore[attr-defined]
+            log.info(
+                "end-of-call flush triggered by %s; buffered_pcm_bytes=%d transcript_entries=%d tool_msgs=%d",
+                type(frame).__name__,
+                buf_bytes,
+                len(self._transcript),
+                len(self._tool_messages),
+            )
             await self._flush_call_ended(reason=self._reason_from_frame(frame))
             return
 
@@ -227,27 +273,87 @@ class RoarkObserver(BaseObserver):
         if self._tool_messages:
             payload["toolCallMessages"] = list(self._tool_messages)
 
+        log.info(
+            "call-ended: pipecatCallId=%s reason=%s transcript=%d toolMsgs=%d s3Key=%s",
+            self._pipecat_call_id,
+            reason,
+            len(self._transcript),
+            len(self._tool_messages),
+            recording_s3_key,
+        )
         ok = await self._client.post_call_ended(payload)
         if not ok:
             log.warning("call-ended POST failed for %s; call may be missing data", self._pipecat_call_id)
+        else:
+            log.debug("call-ended POST ok for %s", self._pipecat_call_id)
 
         await self._client.aclose()
 
     async def _upload_recording(self) -> str | None:
         assert self._recorder is not None
+        log.info(
+            "recording upload starting: pipecatCallId=%s",
+            self._pipecat_call_id,
+        )
+        encode_start = time.monotonic()
         wav = self._recorder.to_wav_bytes()
+        encode_ms = int((time.monotonic() - encode_start) * 1000)
         if not wav:
+            log.warning(
+                "recording upload skipped: empty WAV after encode (pipecatCallId=%s, encode_ms=%d)",
+                self._pipecat_call_id,
+                encode_ms,
+            )
             return None
+        log.info(
+            "recording WAV encoded: pipecatCallId=%s bytes=%d encode_ms=%d",
+            self._pipecat_call_id,
+            len(wav),
+            encode_ms,
+        )
+
+        req_start = time.monotonic()
         upload = await self._client.request_upload_url(
             pipecat_call_id=self._pipecat_call_id, kind="mono", content_type="audio/wav"
         )
+        req_ms = int((time.monotonic() - req_start) * 1000)
         if not upload:
+            log.warning(
+                "recording upload aborted: failed to obtain presigned URL (pipecatCallId=%s, req_ms=%d)",
+                self._pipecat_call_id,
+                req_ms,
+            )
             return None
+        s3_key = upload.get("s3Key")
+        log.info(
+            "recording upload URL acquired: pipecatCallId=%s s3Key=%s expiresInSeconds=%s req_ms=%d",
+            self._pipecat_call_id,
+            s3_key,
+            upload.get("expiresInSeconds"),
+            req_ms,
+        )
+
+        put_start = time.monotonic()
         ok = await self._client.upload_recording(
             upload_url=upload["uploadUrl"], body=wav, content_type="audio/wav"
         )
+        put_ms = int((time.monotonic() - put_start) * 1000)
         if not ok:
+            log.warning(
+                "recording PUT failed: pipecatCallId=%s s3Key=%s bytes=%d put_ms=%d",
+                self._pipecat_call_id,
+                s3_key,
+                len(wav),
+                put_ms,
+            )
             return None
+        log.info(
+            "recording upload complete: pipecatCallId=%s s3Key=%s bytes=%d put_ms=%d",
+            self._pipecat_call_id,
+            s3_key,
+            len(wav),
+            put_ms,
+        )
         return upload["s3Key"]
 
     # ---------------------------------------------------------------------

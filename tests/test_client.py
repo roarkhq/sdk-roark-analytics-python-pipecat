@@ -16,9 +16,17 @@ import pytest
 from pipecat_roark.client import API_KEY_HEADER, RoarkClient
 
 
+WEBHOOK_URL = "https://webhook.example/"
+UPLOAD_URL_ENDPOINT = "https://upload.example/"
+
+
 def _client_with_mock(handler: Any) -> RoarkClient:
     """Build a RoarkClient whose internal AsyncClient uses the supplied mock."""
-    client = RoarkClient(api_key="rk_test", base_url="https://api.example")
+    client = RoarkClient(
+        api_key="rk_test",
+        webhook_url=WEBHOOK_URL,
+        upload_url_endpoint=UPLOAD_URL_ENDPOINT,
+    )
     # We poke a pre-built httpx.AsyncClient into the private slot so the same
     # mock transport handles every call. Direct equivalent of __aenter__.
     client._client = httpx.AsyncClient(  # type: ignore[attr-defined]
@@ -45,7 +53,7 @@ async def test_post_call_started_sends_api_key_and_payload() -> None:
     await client.aclose()
 
     assert ok is True
-    assert seen["url"] == "https://api.example/v1/integrations/pipecat"
+    assert seen["url"] == WEBHOOK_URL
     assert seen["api_key"] == "rk_test"
     assert seen["body"]["event"] == "call-started"
     assert seen["body"]["agentId"] == "a"

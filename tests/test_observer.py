@@ -13,7 +13,26 @@ import pytest
 
 pytest.importorskip("pipecat", reason="pipecat-ai not installed in this env")
 
+from pipecat.frames.frames import StartFrame  # noqa: E402
+from pipecat.observers.base_observer import FramePushed  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
+
 from pipecat_roark.observer import RoarkObserver  # noqa: E402
+
+
+def _push(frame: Any) -> FramePushed:
+    """Build a minimal FramePushed for observer tests.
+
+    Source/destination are observer-irrelevant here, so we pass ``None`` and
+    cast — the observer only reads ``data.frame``.
+    """
+    return FramePushed(
+        source=None,  # type: ignore[arg-type]
+        destination=None,  # type: ignore[arg-type]
+        frame=frame,
+        direction=FrameDirection.DOWNSTREAM,
+        timestamp=0,
+    )
 
 
 class _FakeClient:
@@ -48,12 +67,12 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_started_posts_call_started_with_required_fields() -> None:
+async def test_start_frame_posts_call_started_with_required_fields() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", agent_name="Agent 1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(StartFrame()))
 
     assert len(fake.started) == 1
     payload = fake.started[0]
@@ -66,7 +85,7 @@ async def test_pipeline_started_posts_call_started_with_required_fields() -> Non
 
 
 @pytest.mark.asyncio
-async def test_pipeline_started_infers_phone_interface_from_phone_numbers() -> None:
+async def test_start_frame_infers_phone_interface_from_phone_numbers() -> None:
     obs = RoarkObserver(
         api_key="rk_test",
         agent_id="agent-1",
@@ -76,7 +95,7 @@ async def test_pipeline_started_infers_phone_interface_from_phone_numbers() -> N
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(StartFrame()))
     assert fake.started[0]["interfaceType"] == "PHONE"
     assert fake.started[0]["agentPhoneNumber"] == "+15550000"
     assert fake.started[0]["customerPhoneNumber"] == "+15551111"
@@ -88,7 +107,7 @@ async def test_record_audio_false_skips_upload_request() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(StartFrame()))
     await obs._flush_call_ended(reason="agent-ended")
 
     assert fake.upload_requested == 0
@@ -97,12 +116,25 @@ async def test_record_audio_false_skips_upload_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_multiple_start_frames_only_post_call_started_once() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", record_audio=False)
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(_push(StartFrame()))
+
+    assert len(fake.started) == 1
+
+
+@pytest.mark.asyncio
 async def test_double_flush_only_posts_once() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", record_audio=False)
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(StartFrame()))
     await obs._flush_call_ended(reason="agent-ended")
     await obs._flush_call_ended(reason="agent-ended")
 

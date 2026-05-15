@@ -91,7 +91,8 @@ RoarkObserver(api_key="rk_live_...", agent_id="support-bot-v3", record_audio=Fal
 | `customer_phone_number` | str \| None | `None` | E.164. |
 | `call_direction` | `'INBOUND'` \| `'OUTBOUND'` \| None | inferred | |
 | `interface_type` | `'WEB'` \| `'PHONE'` \| None | inferred from phone numbers | |
-| `roark_base_url` | str | `https://api.roark.ai` | Override for staging or self-hosted Roark. |
+| `roark_webhook_url` | str \| None | Roark Lambda URL | Override the Pipecat webhook endpoint (call-started / call-ended). |
+| `roark_upload_url_endpoint` | str \| None | Roark Lambda URL | Override the recording-upload-URL endpoint. |
 | `record_audio` | bool | `True` | Buffer PCM and upload WAV at end-of-call. |
 | `pipecat_call_id` | str \| None | random UUID | Stable call identifier; useful for idempotency. |
 
