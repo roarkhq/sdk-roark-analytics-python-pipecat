@@ -39,6 +39,11 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.10",
 ]
+# Only needed to load .env when running the example locally — the library
+# itself reads env vars directly via os.environ.
+examples = [
+  "python-dotenv>=1.0",
+]
 
 [project.urls]
 Homepage = "https://roark.ai"
