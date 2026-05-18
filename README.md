@@ -26,10 +26,14 @@ Both URL vars are required; the observer raises at construction if they're missi
 
 ## Usage
 
-Audio capture is delegated to Pipecat's [`AudioBufferProcessor`](https://docs.pipecat.ai/server/utilities/audio/audio-recording).
-Insert it into your pipeline and hand the instance to `RoarkObserver` — the
-processor mixes user and bot audio into a single stereo PCM stream and emits
-chunks via `on_audio_data`, which the observer uploads to S3.
+Drop `RoarkObserver` into your pipeline's `observers=[...]` list — that's it.
+Transcripts and tool calls are captured automatically from the frames flowing
+through the pipeline; no extra processors required.
+
+Audio recording is opt-in: insert Pipecat's [`AudioBufferProcessor`](https://docs.pipecat.ai/server/utilities/audio/audio-recording)
+into the pipeline and hand the instance to `RoarkObserver`. The processor mixes
+user and bot audio into a single stereo PCM stream and emits chunks via
+`on_audio_data`, which the observer uploads to S3.
 
 ```python
 from pipecat.pipeline.pipeline import Pipeline
@@ -44,9 +48,10 @@ audio_buffer = AudioBufferProcessor(
 )
 
 pipeline = Pipeline([
-    transport.input(), stt, context_aggregator, llm, tts,
+    transport.input(), stt, context_aggregator.user(), llm, tts,
     audio_buffer,
     transport.output(),
+    context_aggregator.assistant(),
 ])
 
 task = PipelineTask(
@@ -69,13 +74,24 @@ The observer:
 
 1. POSTs `call-started` on `StartFrame` and calls `audio_buffer.start_recording()`.
    The agent is lazy-registered on Roark the first time it sees this `agent_id`.
-2. Buffers transcripts and tool calls during the call.
-3. Streams pre-mixed stereo PCM chunks (emitted by `AudioBufferProcessor`) to S3
+2. Captures transcripts during the call:
+     * **User turns** from `TranscriptionFrame` (final only — interim
+       transcriptions are ignored).
+     * **Assistant turns** by aggregating `TTSTextFrame` chunks between
+       `BotStoppedSpeakingFrame` / `InterruptionFrame` boundaries.
+3. Captures tool calls from `FunctionCallInProgressFrame` /
+   `FunctionCallResultFrame`. Each is shipped as a `tool_call` / `tool_result`
+   record discriminated by `kind`; Roark pairs them by `toolCallId`.
+4. Streams pre-mixed stereo PCM chunks (emitted by `AudioBufferProcessor`) to S3
    via presigned URLs fetched from `POST /v1/pipecat/chunk-upload-url`.
-4. On `EndFrame` / `CancelFrame` / `StopFrame` (or `aflush()` on transport
-   disconnect), drains in-flight uploads and POSTs `call-ended` with the
-   transcript, tool calls, and PCM format metadata. Roark's call-ended Lambda
-   concatenates the chunks and wraps the result in a WAV header.
+5. On `EndFrame` / `CancelFrame` / `StopFrame` (or `aflush()` on transport
+   disconnect), flushes any in-flight assistant turn, drains in-flight uploads,
+   and POSTs `call-ended` with the transcript, tool calls, and PCM format
+   metadata. Roark's call-ended Lambda concatenates the chunks and wraps the
+   result in a WAV header.
+
+Transcripts and tool calls are forwarded in Pipecat's native shape — Roark
+maps them to its internal schema on its side.
 
 Failures are logged and swallowed — the observer never raises into the pipeline.
 
