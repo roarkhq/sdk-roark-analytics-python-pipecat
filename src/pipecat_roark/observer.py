@@ -1,21 +1,36 @@
 """RoarkObserver — Pipecat BaseObserver that ships call data to Roark.
 
-Audio capture is delegated to Pipecat's ``AudioBufferProcessor``: the user inserts
-that processor into their pipeline and hands the instance to this observer, which
-subscribes to ``on_audio_data`` and uploads each emitted PCM chunk to S3 via a
-presigned URL fetched from Roark.
+The observer is drop-in: insert it into a pipeline's ``observers`` and it
+captures everything it needs by watching raw frames flow through the pipeline.
+
+* **Transcripts** are captured directly from STT and TTS frames — no extra
+  pipeline wiring required. User turns come from ``TranscriptionFrame`` (final
+  only); assistant turns are aggregated from ``TTSTextFrame`` chunks between
+  utterance boundaries (``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` /
+  ``EndFrame`` / ``CancelFrame``).
+* **Tool calls** come from ``FunctionCallInProgressFrame`` /
+  ``FunctionCallResultFrame``. Each is shipped as a discrete ``tool_call`` /
+  ``tool_result`` record discriminated by ``kind``; Roark pairs them by
+  ``toolCallId``.
+* **Audio** is delegated to Pipecat's ``AudioBufferProcessor``: insert it into
+  the pipeline and hand the instance to this observer, which subscribes to
+  ``on_audio_data`` and uploads each emitted PCM chunk to S3 via a presigned
+  URL fetched from Roark.
 
 Lifecycle:
 
 1. ``StartFrame`` → POST ``call-started``; ``AudioBufferProcessor.start_recording()``
    is invoked if a processor was provided.
 2. During the call:
-     * ``TranscriptionFrame`` (finalized) → transcript entry buffered.
-     * ``FunctionCallInProgressFrame`` / ``FunctionCallResultFrame`` → tool-call
-       messages buffered.
+     * ``TranscriptionFrame`` (final) → user turn buffered.
+     * ``TTSTextFrame`` → aggregated into a pending assistant turn.
+     * ``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` → pending
+       assistant turn flushed.
+     * ``FunctionCallInProgressFrame`` / ``FunctionCallResultFrame`` →
+       tool-call messages buffered.
      * ``AudioBufferProcessor.on_audio_data`` → chunk PUT to S3.
-3. ``EndFrame`` / ``CancelFrame`` / ``StopFrame`` → drain in-flight uploads and
-   POST ``call-ended`` with transcript, tool calls, and PCM format metadata.
+3. ``EndFrame`` / ``CancelFrame`` / ``StopFrame`` → flush any pending
+   assistant turn, drain in-flight uploads, POST ``call-ended``.
 
 Failures are logged and swallowed — the observer never raises into the pipeline.
 """
@@ -25,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, cast
@@ -35,9 +49,9 @@ from pipecat.observers.base_observer import BaseObserver, FramePushed
 from ._types import (
     CallEndedPayload,
     CallStartedPayload,
-    ToolCallInvocation,
-    ToolCallResult,
-    TranscriptEntry,
+    ToolCallMessage,
+    ToolResultMessage,
+    TranscriptMessage,
 )
 from .client import RoarkClient
 
@@ -56,14 +70,38 @@ def _utc_now_iso() -> str:
 
 
 def _arguments_to_json_string(value: object) -> str:
+    """Stringify tool-call arguments without parsing them.
+
+    Pipecat hands us either a string (already JSON-encoded by the LLM) or a
+    dict (pre-parsed by the LLM service). The wire contract is a JSON string,
+    so dicts are re-encoded with compact separators to mirror how Retell and
+    OpenAI send them.
+    """
     if value is None:
         return "{}"
     if isinstance(value, str):
         return value
     try:
-        return json.dumps(value)
+        return json.dumps(value, separators=(",", ":"))
     except (TypeError, ValueError):
         return "{}"
+
+
+def _result_to_string(value: object) -> str:
+    """Stringify a tool result for the wire.
+
+    Objects / lists → compact JSON. Scalars → ``str()``. ``None`` → ``""``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
 
 
 class RoarkObserver(BaseObserver):
@@ -104,13 +142,17 @@ class RoarkObserver(BaseObserver):
         self._sampling_rate = sampling_rate
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
 
-        self._transcript: list[TranscriptEntry] = []
-        self._tool_messages: list[ToolCallInvocation | ToolCallResult] = []
-        self._call_started_at: float | None = None  # monotonic seconds
+        self._transcript: list[TranscriptMessage] = []
+        self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
         self._call_started_iso: str | None = None
-        self._first_speaker: Literal["agent", "user"] | None = None
+        self._first_speaker: Literal["assistant", "user"] | None = None
         self._started_posted = False
         self._end_flushed = False
+
+        # Pending assistant turn — text chunks streamed by TTS, flushed when the
+        # bot stops speaking, gets interrupted, or the pipeline ends.
+        self._assistant_text_parts: list[tuple[str, bool]] = []
+        self._assistant_start_iso: str | None = None
 
         self._chunk_index = 0
         self._inflight_uploads: set[asyncio.Task[None]] = set()
@@ -122,13 +164,16 @@ class RoarkObserver(BaseObserver):
 
     async def on_push_frame(self, data: FramePushed) -> None:  # type: ignore[override]
         from pipecat.frames.frames import (
+            BotStoppedSpeakingFrame,
             CancelFrame,
             EndFrame,
             FunctionCallInProgressFrame,
             FunctionCallResultFrame,
+            InterruptionFrame,
             StartFrame,
             StopFrame,
             TranscriptionFrame,
+            TTSTextFrame,
         )
 
         frame: Frame = data.frame
@@ -144,19 +189,30 @@ class RoarkObserver(BaseObserver):
             return
 
         if isinstance(frame, TranscriptionFrame):
+            # STT may emit interim frames too; only commit on finalize.
             if getattr(frame, "finalized", True):
-                self._record_transcript_entry(frame.text, role="user")
+                self._record_user_transcription(frame)
             return
 
+        if isinstance(frame, TTSTextFrame):
+            self._accumulate_assistant_text(frame)
+            return
+
+        if isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
+            self._flush_assistant_turn()
+            # Fall through — these frames are not call terminators.
+
         if isinstance(frame, FunctionCallInProgressFrame):
-            self._tool_messages.append(self._build_tool_invocation(frame))
+            self._record_tool_invocation(frame)
             return
 
         if isinstance(frame, FunctionCallResultFrame):
-            self._tool_messages.append(self._build_tool_result(frame))
+            self._record_tool_result(frame)
             return
 
         if isinstance(frame, (EndFrame, CancelFrame, StopFrame)):
+            # Capture any in-flight assistant text before the call-ended POST.
+            self._flush_assistant_turn()
             await self._flush_call_ended(reason=self._reason_from_frame(frame))
             return
 
@@ -168,13 +224,13 @@ class RoarkObserver(BaseObserver):
         ``on_client_disconnected`` handler to guarantee ``call-ended`` is POSTed.
         Safe to call multiple times.
         """
+        self._flush_assistant_turn()
         await self._flush_call_ended(reason=reason)
 
     # ------------------------------------------------------------------ call-started
 
     async def _post_call_started(self) -> None:
         self._started_posted = True
-        self._call_started_at = time.monotonic()
         self._call_started_iso = _utc_now_iso()
 
         payload: CallStartedPayload = {
@@ -260,68 +316,156 @@ class RoarkObserver(BaseObserver):
             "callEndedReason": reason,
         }
         if self._first_speaker is not None:
-            payload["agentSpokeFirst"] = self._first_speaker == "agent"
+            payload["agentSpokeFirst"] = self._first_speaker == "assistant"
         if abp is not None and self._chunk_index > 0:
             payload["recordingSampleRate"] = abp.sample_rate
             payload["recordingNumChannels"] = abp.num_channels
         if self._transcript:
             payload["transcript"] = list(self._transcript)
-        if self._tool_messages:
-            payload["toolCallMessages"] = list(self._tool_messages)
+        else:
+            log.warning(
+                "call-ended with empty transcript (pipecatCallId=%s) — no "
+                "TranscriptionFrame or TTSTextFrame was observed during the call.",
+                self._pipecat_call_id,
+            )
+        if self._tool_calls:
+            payload["toolCalls"] = list(self._tool_calls)
 
         log.info(
-            "call-ended: pipecatCallId=%s reason=%s transcript=%d toolMsgs=%d chunks=%d",
+            "call-ended: pipecatCallId=%s reason=%s transcript=%d toolCalls=%d chunks=%d",
             self._pipecat_call_id,
             reason,
             len(self._transcript),
-            len(self._tool_messages),
+            len(self._tool_calls),
             self._chunk_index,
         )
         await self._client.post_call_ended(payload)
         await self._client.aclose()
 
-    # ------------------------------------------------------------------ helpers
+        # Per-call buffers are gone now that the POST has been acknowledged.
+        self._transcript.clear()
+        self._tool_calls.clear()
 
-    def _record_transcript_entry(self, text: str, *, role: Literal["agent", "user"]) -> None:
-        if not text:
+    # ------------------------------------------------------------------ transcript
+
+    def _record_user_transcription(self, frame: object) -> None:
+        try:
+            text = (getattr(frame, "text", "") or "").strip()
+            if not text:
+                return
+            timestamp = getattr(frame, "timestamp", None)
+            if not isinstance(timestamp, str) or not timestamp:
+                timestamp = _utc_now_iso()
+
+            entry: TranscriptMessage = {
+                "role": "user",
+                "content": text,
+                "timestamp": timestamp,
+            }
+            user_id = getattr(frame, "user_id", None)
+            if isinstance(user_id, str) and user_id:
+                entry["userId"] = user_id
+            language = getattr(frame, "language", None)
+            if language is not None:
+                # Pipecat's Language is a StrEnum; stringify either way.
+                entry["language"] = str(language)
+
+            if self._first_speaker is None:
+                self._first_speaker = "user"
+            self._transcript.append(entry)
+            log.info(
+                "transcript user turn captured: chars=%d total=%d",
+                len(text),
+                len(self._transcript),
+            )
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("failed to capture user transcription: %r", err)
+
+    def _accumulate_assistant_text(self, frame: object) -> None:
+        try:
+            text = getattr(frame, "text", "") or ""
+            if not text:
+                return
+            includes_spaces = bool(getattr(frame, "includes_inter_frame_spaces", False))
+            if not self._assistant_text_parts:
+                self._assistant_start_iso = _utc_now_iso()
+            self._assistant_text_parts.append((text, includes_spaces))
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("failed to accumulate assistant text: %r", err)
+
+    def _flush_assistant_turn(self) -> None:
+        if not self._assistant_text_parts:
             return
-        offset_ms = self._offset_ms_now()
-        if self._first_speaker is None:
-            self._first_speaker = role
-        self._transcript.append(
-            {"role": role, "text": text, "startMs": offset_ms, "endMs": offset_ms}
-        )
+        try:
+            content = _concatenate_text_parts(self._assistant_text_parts).strip()
+            timestamp = self._assistant_start_iso or _utc_now_iso()
+            self._assistant_text_parts = []
+            self._assistant_start_iso = None
+            if not content:
+                return
+            entry: TranscriptMessage = {
+                "role": "assistant",
+                "content": content,
+                "timestamp": timestamp,
+            }
+            if self._first_speaker is None:
+                self._first_speaker = "assistant"
+            self._transcript.append(entry)
+            log.info(
+                "transcript assistant turn captured: chars=%d total=%d",
+                len(content),
+                len(self._transcript),
+            )
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("failed to flush assistant turn: %r", err)
+            # Reset so a parser glitch doesn't poison the next turn.
+            self._assistant_text_parts = []
+            self._assistant_start_iso = None
 
-    def _build_tool_invocation(self, frame: object) -> ToolCallInvocation:
-        return cast(
-            ToolCallInvocation,
-            {
-                "role": "tool_call_invocation",
-                "toolCallId": getattr(frame, "tool_call_id", ""),
-                "name": getattr(frame, "function_name", ""),
-                "arguments": _arguments_to_json_string(getattr(frame, "arguments", None)),
-                "secondsFromStart": self._offset_ms_now() / 1000.0,
-            },
-        )
+    # ------------------------------------------------------------------ tool calls
 
-    def _build_tool_result(self, frame: object) -> ToolCallResult:
-        result = getattr(frame, "result", "")
-        if not isinstance(result, (str, dict, list)):
-            result = str(result)
-        return cast(
-            ToolCallResult,
-            {
-                "role": "tool_call_result",
-                "toolCallId": getattr(frame, "tool_call_id", ""),
-                "result": result,
-                "secondsFromStart": self._offset_ms_now() / 1000.0,
-            },
-        )
+    def _record_tool_invocation(self, frame: object) -> None:
+        try:
+            entry = cast(
+                ToolCallMessage,
+                {
+                    "kind": "tool_call",
+                    "toolCallId": str(getattr(frame, "tool_call_id", "") or ""),
+                    "name": str(getattr(frame, "function_name", "") or ""),
+                    "arguments": _arguments_to_json_string(
+                        getattr(frame, "arguments", None)
+                    ),
+                    "timestamp": _utc_now_iso(),
+                },
+            )
+            self._tool_calls.append(entry)
+            log.info(
+                "tool_call captured: name=%s toolCallId=%s",
+                entry["name"],
+                entry["toolCallId"],
+            )
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("failed to capture tool invocation: %r", err)
 
-    def _offset_ms_now(self) -> int:
-        if self._call_started_at is None:
-            return 0
-        return max(0, int((time.monotonic() - self._call_started_at) * 1000))
+    def _record_tool_result(self, frame: object) -> None:
+        try:
+            entry = cast(
+                ToolResultMessage,
+                {
+                    "kind": "tool_result",
+                    "toolCallId": str(getattr(frame, "tool_call_id", "") or ""),
+                    "content": _result_to_string(getattr(frame, "result", None)),
+                    "timestamp": _utc_now_iso(),
+                },
+            )
+            self._tool_calls.append(entry)
+            log.info(
+                "tool_result captured: toolCallId=%s content_chars=%d",
+                entry["toolCallId"],
+                len(entry["content"]),
+            )
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("failed to capture tool result: %r", err)
 
     @staticmethod
     def _reason_from_frame(frame: object) -> str:
@@ -331,6 +475,31 @@ class RoarkObserver(BaseObserver):
         if isinstance(frame, (CancelFrame, EndFrame)):
             return str(reason) if reason else "agent-ended"
         return "unknown"
+
+
+def _concatenate_text_parts(parts: list[tuple[str, bool]]) -> str:
+    """Join TTS text chunks, inserting spaces where the chunks didn't include them.
+
+    Mirrors Pipecat's ``concatenate_aggregated_text`` semantics so the assistant
+    transcript matches what the bot actually says.
+    """
+    result = ""
+    last_had_spaces = False
+    for idx, (text, includes_spaces) in enumerate(parts):
+        if not text:
+            continue
+        if (
+            idx > 0
+            and not last_had_spaces
+            and not includes_spaces
+            and result
+            and not result.endswith(" ")
+            and not text.startswith(" ")
+        ):
+            result += " "
+        result += text
+        last_had_spaces = includes_spaces
+    return result
 
 
 __all__ = ["RoarkObserver"]

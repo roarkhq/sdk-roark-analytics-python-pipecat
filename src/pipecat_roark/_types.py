@@ -1,8 +1,10 @@
 """Wire-format types for the Roark webhook contract.
 
-Mirrors the Zod schemas in the Roark monorepo
-(``src/packages/event-bus/events.ts``). Kept as TypedDicts so the JSON
-serialization is `dict`-shaped without any conversion step.
+The transcript and tool-call shapes mirror Pipecat's own vocabulary
+(``TranscriptionUpdateFrame``, ``FunctionCallInProgressFrame``,
+``FunctionCallResultFrame``). Roark's ``@roarkanalytics/integrations/pipecat``
+package maps them to internal Roark types on its side — this observer stays
+dumb and forwards pipecat-native shapes verbatim.
 """
 
 from __future__ import annotations
@@ -10,26 +12,27 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 
-class ToolCallInvocation(TypedDict):
-    role: Literal["tool_call_invocation"]
+class TranscriptMessage(TypedDict, total=False):
+    role: Literal["assistant", "user", "system"]
+    content: str
+    timestamp: str  # ISO 8601 UTC
+    userId: str
+    language: str  # BCP-47
+
+
+class ToolCallMessage(TypedDict, total=False):
+    kind: Literal["tool_call"]
     toolCallId: str
     name: str
     arguments: str  # JSON string — Roark side `JSON.parse`s it
-    secondsFromStart: float
+    timestamp: str  # ISO 8601 UTC
 
 
-class ToolCallResult(TypedDict, total=False):
-    role: Literal["tool_call_result"]
+class ToolResultMessage(TypedDict, total=False):
+    kind: Literal["tool_result"]
     toolCallId: str
-    result: str | dict
-    secondsFromStart: float
-
-
-class TranscriptEntry(TypedDict):
-    role: Literal["agent", "user", "system"]
-    text: str
-    startMs: int
-    endMs: int
+    content: str  # stringified result (json.dumps for objects, str() for scalars)
+    timestamp: str  # ISO 8601 UTC
 
 
 class CallStartedPayload(TypedDict, total=False):
@@ -59,8 +62,8 @@ class CallEndedPayload(TypedDict, total=False):
     agentSpokeFirst: bool
     recordingSampleRate: int
     recordingNumChannels: int
-    transcript: list[TranscriptEntry]
-    toolCallMessages: list[ToolCallInvocation | ToolCallResult]
+    transcript: list[TranscriptMessage]
+    toolCalls: list[ToolCallMessage | ToolResultMessage]
 
 
 class ChunkUploadUrlResponse(TypedDict, total=False):
