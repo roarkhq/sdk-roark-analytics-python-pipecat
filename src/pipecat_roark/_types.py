@@ -1,9 +1,8 @@
 """Wire-format types for the Roark webhook contract.
 
-Mirrors the Zod schemas defined in the Roark monorepo at
-``src/packages/event-bus/events.ts`` (PipecatWebhookCallStarted /
-PipecatWebhookCallEnded). Kept as TypedDicts rather than dataclasses so the
-JSON serialization is `dict`-shaped without any conversion step.
+Mirrors the Zod schemas in the Roark monorepo
+(``src/packages/event-bus/events.ts``). Kept as TypedDicts so the JSON
+serialization is `dict`-shaped without any conversion step.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ class ToolCallInvocation(TypedDict):
 class ToolCallResult(TypedDict, total=False):
     role: Literal["tool_call_result"]
     toolCallId: str
-    result: str | dict  # observer flattens object results to JSON-string on send
+    result: str | dict
     secondsFromStart: float
 
 
@@ -34,8 +33,6 @@ class TranscriptEntry(TypedDict):
 
 
 class CallStartedPayload(TypedDict, total=False):
-    """Body of POST /v1/integrations/pipecat with event=call-started."""
-
     event: Literal["call-started"]
     pipecatCallId: str
     eventTimestamp: str  # ISO 8601 UTC
@@ -47,11 +44,11 @@ class CallStartedPayload(TypedDict, total=False):
     customerPhoneNumber: str
     callDirection: Literal["INBOUND", "OUTBOUND"]
     interfaceType: Literal["WEB", "PHONE"]
+    # Accepted as 0..1 or 0..100; Roark normalizes.
+    samplingRate: float
 
 
 class CallEndedPayload(TypedDict, total=False):
-    """Body of POST /v1/integrations/pipecat with event=call-ended."""
-
     event: Literal["call-ended"]
     pipecatCallId: str
     eventTimestamp: str  # ISO 8601 UTC
@@ -60,19 +57,16 @@ class CallEndedPayload(TypedDict, total=False):
     callEndedAt: str | None
     callEndedReason: str
     agentSpokeFirst: bool
-    recordingS3Key: str  # set after presigned PUT succeeds
-    stereoRecordingS3Key: str
+    recordingSampleRate: int
+    recordingNumChannels: int
     transcript: list[TranscriptEntry]
     toolCallMessages: list[ToolCallInvocation | ToolCallResult]
 
 
-class UploadUrlRequest(TypedDict):
-    pipecatCallId: str
-    kind: Literal["mono", "stereo"]
-    contentType: str  # 'audio/wav' | 'audio/mpeg' | 'audio/webm'
-
-
-class UploadUrlResponse(TypedDict):
+class ChunkUploadUrlResponse(TypedDict, total=False):
     uploadUrl: str
     s3Key: str
+    chunkIndex: int
     expiresInSeconds: int
+    method: Literal["PUT"]
+    contentType: str
