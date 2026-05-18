@@ -9,6 +9,7 @@ pipeline and the observer only subscribes to its event.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -16,14 +17,25 @@ import pytest
 pytest.importorskip("pipecat", reason="pipecat-ai not installed in this env")
 
 from pipecat.frames.frames import (  # noqa: E402
+    BotStoppedSpeakingFrame,
     EndFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    InterruptionFrame,
     StartFrame,
     TranscriptionFrame,
+    TTSTextFrame,
 )
 from pipecat.observers.base_observer import FramePushed  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 from pipecat_roark.observer import RoarkObserver  # noqa: E402
+
+
+def _user_frame(text: str, *, user_id: str = "user", timestamp: str = "t") -> TranscriptionFrame:
+    frame = TranscriptionFrame(text=text, user_id=user_id, timestamp=timestamp)
+    frame.finalized = True  # type: ignore[attr-defined]
+    return frame
 
 
 def _push(frame: Any) -> FramePushed:
@@ -175,20 +187,171 @@ async def test_double_flush_only_posts_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transcript_and_tool_calls_land_on_call_ended() -> None:
+async def test_user_and_assistant_turns_captured_from_raw_frames() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
     await obs.on_push_frame(_push(StartFrame()))
-    frame = TranscriptionFrame(text="hello", user_id="user", timestamp="t")
-    frame.finalized = True  # type: ignore[attr-defined]
-    await obs.on_push_frame(_push(frame))
+    await obs.on_push_frame(
+        _push(_user_frame("hello", user_id="user-42", timestamp="2026-05-18T12:00:00+00:00"))
+    )
+    # Assistant turn: TTS emits one or more TTSTextFrames; BotStoppedSpeakingFrame closes it.
+    await obs.on_push_frame(_push(TTSTextFrame(text="hi", aggregated_by="sentence")))
+    await obs.on_push_frame(_push(TTSTextFrame(text="there", aggregated_by="sentence")))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
     await obs.on_push_frame(_push(EndFrame()))
 
     ended = fake.ended[0]
-    assert len(ended["transcript"]) == 1
-    assert ended["transcript"][0]["text"] == "hello"
+    transcript = ended["transcript"]
+    assert [m["role"] for m in transcript] == ["user", "assistant"]
+    assert transcript[0]["content"] == "hello"
+    assert transcript[0]["userId"] == "user-42"
+    assert transcript[0]["timestamp"] == "2026-05-18T12:00:00+00:00"
+    # Assistant text-chunks should be joined with a separating space.
+    assert transcript[1]["content"] == "hi there"
+    # User spoke first, so agentSpokeFirst is False.
+    assert ended["agentSpokeFirst"] is False
+
+
+@pytest.mark.asyncio
+async def test_assistant_first_sets_agent_spoke_first() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(
+        _push(TTSTextFrame(text="hi, how can I help?", aggregated_by="sentence"))
+    )
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.ended[0]["agentSpokeFirst"] is True
+
+
+@pytest.mark.asyncio
+async def test_interim_user_transcriptions_are_dropped() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    interim = TranscriptionFrame(text="hel", user_id="user", timestamp="t1")
+    # `finalized` defaults to False on the dataclass; the observer must skip those.
+    await obs.on_push_frame(_push(interim))
+    await obs.on_push_frame(_push(_user_frame("hello", timestamp="t2")))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    transcript = fake.ended[0]["transcript"]
+    assert len(transcript) == 1
+    assert transcript[0]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_assistant_turn_flushed_on_end_frame_without_bot_stopped() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(_push(TTSTextFrame(text="goodbye", aggregated_by="sentence")))
+    # Pipeline ends mid-utterance; the observer must still capture what was said.
+    await obs.on_push_frame(_push(EndFrame()))
+
+    transcript = fake.ended[0]["transcript"]
+    assert len(transcript) == 1
+    assert transcript[0]["role"] == "assistant"
+    assert transcript[0]["content"] == "goodbye"
+
+
+@pytest.mark.asyncio
+async def test_interruption_flushes_partial_assistant_turn() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(_push(TTSTextFrame(text="let me explain", aggregated_by="sentence")))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    await obs.on_push_frame(_push(_user_frame("actually never mind")))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    transcript = fake.ended[0]["transcript"]
+    assert [m["role"] for m in transcript] == ["assistant", "user"]
+    assert transcript[0]["content"] == "let me explain"
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_emit_kind_discriminated_records() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(
+        _push(
+            FunctionCallInProgressFrame(
+                function_name="get_weather",
+                tool_call_id="call_abc123",
+                arguments={"city": "Tokyo"},
+            )
+        )
+    )
+    await obs.on_push_frame(
+        _push(
+            FunctionCallResultFrame(
+                function_name="get_weather",
+                tool_call_id="call_abc123",
+                arguments={"city": "Tokyo"},
+                result={"temp_c": 21},
+            )
+        )
+    )
+    await obs.on_push_frame(_push(EndFrame()))
+
+    tool_calls = fake.ended[0]["toolCalls"]
+    assert len(tool_calls) == 2
+
+    invocation, result = tool_calls
+    assert invocation["kind"] == "tool_call"
+    assert invocation["toolCallId"] == "call_abc123"
+    assert invocation["name"] == "get_weather"
+    # arguments must be a JSON-encoded STRING, not a dict.
+    assert isinstance(invocation["arguments"], str)
+    assert json.loads(invocation["arguments"]) == {"city": "Tokyo"}
+    assert isinstance(invocation["timestamp"], str)
+
+    assert result["kind"] == "tool_result"
+    assert result["toolCallId"] == "call_abc123"
+    # content must be a string; dict results are JSON-encoded.
+    assert isinstance(result["content"], str)
+    assert json.loads(result["content"]) == {"temp_c": 21}
+    assert isinstance(result["timestamp"], str)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_string_arguments_pass_through_verbatim() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_push_frame(
+        _push(
+            FunctionCallInProgressFrame(
+                function_name="end_call",
+                tool_call_id="call_xyz",
+                arguments='{"reason":"done"}',
+            )
+        )
+    )
+    await obs.on_push_frame(_push(EndFrame()))
+
+    tool_calls = fake.ended[0]["toolCalls"]
+    # Fire-and-forget tool with no result emitted: only the invocation lands.
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["arguments"] == '{"reason":"done"}'
 
 
 @pytest.mark.asyncio
