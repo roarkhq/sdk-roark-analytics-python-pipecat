@@ -13,16 +13,10 @@ from typing import Any
 import httpx
 import pytest
 
-from pipecat_roark.client import (
-    API_KEY_HEADER,
-    ENV_UPLOAD_URL_ENDPOINT,
-    ENV_WEBHOOK_URL,
-    RoarkClient,
-)
-
+from pipecat_roark.client import API_KEY_HEADER, RoarkClient
 
 WEBHOOK_URL = "https://webhook.example/"
-UPLOAD_URL_ENDPOINT = "https://upload.example/"
+CHUNK_URL_ENDPOINT = "https://chunks.example/"
 
 
 def _client_with_mock(handler: Any) -> RoarkClient:
@@ -30,13 +24,14 @@ def _client_with_mock(handler: Any) -> RoarkClient:
     client = RoarkClient(
         api_key="rk_test",
         webhook_url=WEBHOOK_URL,
-        upload_url_endpoint=UPLOAD_URL_ENDPOINT,
+        chunk_upload_url_endpoint=CHUNK_URL_ENDPOINT,
     )
-    # We poke a pre-built httpx.AsyncClient into the private slot so the same
-    # mock transport handles every call. Direct equivalent of __aenter__.
     client._client = httpx.AsyncClient(  # type: ignore[attr-defined]
         transport=httpx.MockTransport(handler),
         headers={API_KEY_HEADER: "rk_test"},
+    )
+    client._s3_client = httpx.AsyncClient(  # type: ignore[attr-defined]
+        transport=httpx.MockTransport(handler),
     )
     return client
 
@@ -71,54 +66,80 @@ async def test_post_returns_false_on_5xx() -> None:
 
     client = _client_with_mock(handler)
     ok = await client.post_call_ended(
-        {"event": "call-ended", "pipecatCallId": "abc", "eventTimestamp": "t", "callEndedReason": "x"}
+        {
+            "event": "call-ended",
+            "pipecatCallId": "abc",
+            "eventTimestamp": "t",
+            "callEndedReason": "x",
+        }
     )
     await client.aclose()
     assert ok is False
 
 
 @pytest.mark.asyncio
-async def test_request_upload_url_returns_none_on_failure() -> None:
+async def test_request_chunk_upload_url_unwraps_data_envelope() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(500)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "uploadUrl": "https://s3/x",
+                    "s3Key": "calls/p/abc/chunks/000000.pcm",
+                    "chunkIndex": 0,
+                    "expiresInSeconds": 900,
+                    "method": "PUT",
+                    "contentType": "audio/pcm",
+                }
+            },
+        )
 
     client = _client_with_mock(handler)
-    out = await client.request_upload_url(pipecat_call_id="abc")
+    out = await client.request_chunk_upload_url(pipecat_call_id="abc", chunk_index=0)
     await client.aclose()
-    assert out is None
+    assert out is not None
+    assert out["uploadUrl"] == "https://s3/x"
+    assert out["s3Key"].endswith("000000.pcm")
 
 
 @pytest.mark.asyncio
-async def test_request_upload_url_returns_response_on_success() -> None:
-    def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"uploadUrl": "https://s3/x", "s3Key": "k", "expiresInSeconds": 900})
+async def test_upload_chunk_returns_true_on_2xx() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(200)
 
     client = _client_with_mock(handler)
-    out = await client.request_upload_url(pipecat_call_id="abc")
+    ok = await client.upload_chunk(upload_url="https://s3/x", body=b"abc")
     await client.aclose()
-    assert out == {"uploadUrl": "https://s3/x", "s3Key": "k", "expiresInSeconds": 900}
+    assert ok is True
+    assert seen["body"] == b"abc"
+    assert seen["content_type"] == "audio/pcm"
 
 
 def test_endpoint_resolution_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     """Explicit kwarg beats env var; missing config raises ValueError."""
-    # Explicit kwarg wins even when env is set.
-    monkeypatch.setenv(ENV_WEBHOOK_URL, "https://env-webhook/")
-    monkeypatch.setenv(ENV_UPLOAD_URL_ENDPOINT, "https://env-upload/")
+    monkeypatch.setenv("ROARK_WEBHOOK_URL", "https://env-webhook/")
+    monkeypatch.setenv("ROARK_CHUNK_UPLOAD_URL_ENDPOINT", "https://env-chunks/")
     c = RoarkClient(
         api_key="k",
         webhook_url="https://explicit-webhook/",
-        upload_url_endpoint="https://explicit-upload/",
+        chunk_upload_url_endpoint="https://explicit-chunks/",
     )
     assert c._webhook_url == "https://explicit-webhook/"
-    assert c._upload_url_endpoint == "https://explicit-upload/"
+    assert c._chunk_upload_url_endpoint == "https://explicit-chunks/"
 
-    # Env var wins when no kwarg is passed.
     c = RoarkClient(api_key="k")
     assert c._webhook_url == "https://env-webhook/"
-    assert c._upload_url_endpoint == "https://env-upload/"
+    assert c._chunk_upload_url_endpoint == "https://env-chunks/"
 
-    # No kwarg, no env → ValueError at construction (fail fast).
-    monkeypatch.delenv(ENV_WEBHOOK_URL)
-    monkeypatch.delenv(ENV_UPLOAD_URL_ENDPOINT)
-    with pytest.raises(ValueError, match=ENV_WEBHOOK_URL):
+    monkeypatch.delenv("ROARK_WEBHOOK_URL")
+    with pytest.raises(ValueError, match="ROARK_WEBHOOK_URL"):
+        RoarkClient(api_key="k")
+
+    monkeypatch.setenv("ROARK_WEBHOOK_URL", "https://env-webhook/")
+    monkeypatch.delenv("ROARK_CHUNK_UPLOAD_URL_ENDPOINT")
+    with pytest.raises(ValueError, match="ROARK_CHUNK_UPLOAD_URL_ENDPOINT"):
         RoarkClient(api_key="k")
