@@ -48,9 +48,12 @@ task = PipelineTask(
 
 Pass `record_audio=True` and the observer creates a sane-default
 [`AudioBufferProcessor`](https://docs.pipecat.ai/server/utilities/audio/audio-recording)
-(stereo 24 kHz, ~5.5 s chunks) exposed as `roark.audio_processor`. Splice it
-into your pipeline **after `transport.output()`** so it sees the bot's audio
-post-TTS:
+(stereo, ~256 KB chunks) exposed as `roark.audio_processor`. The sample rate
+is **adopted from the pipeline's `StartFrame`** so it tracks whatever the
+transport/provider negotiated — 8 kHz on Twilio/Telnyx, 16/24/48 kHz on
+Daily/LiveKit, etc. The actual rate is forwarded to Roark as
+`recordingSampleRate` on `call-ended`. Splice the processor into your pipeline
+**after `transport.output()`** so it sees the bot's audio post-TTS:
 
 ```python
 from pipecat.pipeline.pipeline import Pipeline
@@ -188,7 +191,7 @@ before any speech was processed.
 | `roark_webhook_url` | `str \| None` | `$ROARK_WEBHOOK_URL` (required) | |
 | `roark_chunk_upload_url_endpoint` | `str \| None` | `$ROARK_CHUNK_UPLOAD_URL_ENDPOINT` (required) | |
 | `sampling_rate` | `float \| None` | `None` | Per-call sampling rate. Accepts `0..1` or `0..100`. |
-| `record_audio` | `bool` | `False` | Create a default `AudioBufferProcessor` (stereo 24 kHz, ~256 KB chunks) accessible via `observer.audio_processor`. Mutually exclusive with `audio_buffer_processor`. |
+| `record_audio` | `bool` | `False` | Create a default `AudioBufferProcessor` (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame` so it tracks the provider) accessible via `observer.audio_processor`. Mutually exclusive with `audio_buffer_processor`. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` instance to control sample rate / channels / buffer size. |
 | `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. |
 

@@ -396,9 +396,10 @@ async def test_record_audio_true_creates_default_audio_processor() -> None:
 
     abp = obs.audio_processor
     assert isinstance(abp, AudioBufferProcessor)
-    # ``sample_rate`` is filled in by the pipeline at start; check the constructor-stored
-    # value instead. ``num_channels`` is set on the instance directly.
-    assert abp._init_sample_rate == 24000  # noqa: SLF001 — constructor input
+    # ``sample_rate`` is intentionally left unset so AudioBufferProcessor adopts the
+    # pipeline's negotiated rate from the StartFrame (varies by provider — 8 kHz on
+    # Twilio/Telnyx, 16/24/48 kHz on Daily/LiveKit). ``num_channels`` is set directly.
+    assert abp._init_sample_rate is None  # noqa: SLF001 — constructor input
     assert abp.num_channels == 2
 
     # on_pipeline_started must invoke start_recording on the auto-created processor.

@@ -13,8 +13,11 @@ captures everything it needs by watching raw frames flow through the pipeline.
   ``tool_result`` record discriminated by ``kind``; Roark pairs them by
   ``toolCallId``.
 * **Audio** is delegated to Pipecat's ``AudioBufferProcessor``. Pass
-  ``record_audio=True`` and the observer creates one with sane defaults,
-  exposed as ``observer.audio_processor`` for the user to splice into their
+  ``record_audio=True`` and the observer creates one with sane defaults
+  (stereo, ~256 KB chunks; sample rate is adopted from the pipeline's
+  ``StartFrame`` so it tracks whatever the transport/provider negotiated —
+  8 kHz for Twilio/Telnyx, 16/24/48 kHz for Daily/LiveKit, etc.), exposed
+  as ``observer.audio_processor`` for the user to splice into their
   pipeline. Power users may instead pass their own pre-configured instance via
   ``audio_buffer_processor=``.
 
@@ -170,10 +173,13 @@ class RoarkObserver(BaseObserver):
                 AudioBufferProcessor as _AudioBufferProcessor,
             )
 
-            # Stereo (L=user, R=bot) at 24 kHz; emit a chunk every ~256 KB
-            # (~5.5 s at this rate). Matches what most pipelines want.
+            # Stereo (L=user, R=bot), ~256 KB chunks. Sample rate is left
+            # unspecified so AudioBufferProcessor adopts the pipeline's
+            # negotiated ``audio_out_sample_rate`` from the StartFrame — this
+            # varies by provider (Twilio/Telnyx are 8 kHz, Daily/LiveKit are
+            # typically 16/24/48 kHz). Hardcoding a rate would force resampling
+            # at best and silent corruption at worst.
             audio_buffer_processor = _AudioBufferProcessor(
-                sample_rate=24000,
                 num_channels=2,
                 buffer_size=256 * 1024,
             )
