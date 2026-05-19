@@ -12,15 +12,17 @@ captures everything it needs by watching raw frames flow through the pipeline.
   ``FunctionCallResultFrame``. Each is shipped as a discrete ``tool_call`` /
   ``tool_result`` record discriminated by ``kind``; Roark pairs them by
   ``toolCallId``.
-* **Audio** is delegated to Pipecat's ``AudioBufferProcessor``: insert it into
-  the pipeline and hand the instance to this observer, which subscribes to
-  ``on_audio_data`` and uploads each emitted PCM chunk to S3 via a presigned
-  URL fetched from Roark.
+* **Audio** is delegated to Pipecat's ``AudioBufferProcessor``. Pass
+  ``record_audio=True`` and the observer creates one with sane defaults,
+  exposed as ``observer.audio_processor`` for the user to splice into their
+  pipeline. Power users may instead pass their own pre-configured instance via
+  ``audio_buffer_processor=``.
 
 Lifecycle:
 
-1. ``StartFrame`` → POST ``call-started``; ``AudioBufferProcessor.start_recording()``
-   is invoked if a processor was provided.
+1. ``on_pipeline_started`` (fired by Pipecat once after ``StartFrame`` has
+   propagated through every processor) → POST ``call-started``;
+   ``AudioBufferProcessor.start_recording()`` is invoked if recording is enabled.
 2. During the call:
      * ``TranscriptionFrame`` (final) → user turn buffered.
      * ``TTSTextFrame`` → aggregated into a pending assistant turn.
@@ -121,10 +123,16 @@ class RoarkObserver(BaseObserver):
         roark_webhook_url: str | None = None,
         roark_chunk_upload_url_endpoint: str | None = None,
         sampling_rate: float | None = None,
+        record_audio: bool = False,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
     ) -> None:
         super().__init__()
+        if record_audio and audio_buffer_processor is not None:
+            raise ValueError(
+                "pass either record_audio=True or audio_buffer_processor=..., not both"
+            )
+
         client_kwargs: dict[str, str] = {"api_key": api_key}
         if roark_webhook_url is not None:
             client_kwargs["webhook_url"] = roark_webhook_url
@@ -151,14 +159,49 @@ class RoarkObserver(BaseObserver):
 
         # Pending assistant turn — text chunks streamed by TTS, flushed when the
         # bot stops speaking, gets interrupted, or the pipeline ends.
-        self._assistant_text_parts: list[tuple[str, bool]] = []
+        self._assistant_text_parts: list[str] = []
         self._assistant_start_iso: str | None = None
 
         self._chunk_index = 0
         self._inflight_uploads: set[asyncio.Task[None]] = set()
-        self._audio_buffer_processor = audio_buffer_processor
+
+        if record_audio:
+            from pipecat.processors.audio.audio_buffer_processor import (
+                AudioBufferProcessor as _AudioBufferProcessor,
+            )
+
+            # Stereo (L=user, R=bot) at 24 kHz; emit a chunk every ~256 KB
+            # (~5.5 s at this rate). Matches what most pipelines want.
+            audio_buffer_processor = _AudioBufferProcessor(
+                sample_rate=24000,
+                num_channels=2,
+                buffer_size=256 * 1024,
+            )
+        self.audio_processor: AudioBufferProcessor | None = audio_buffer_processor
         if audio_buffer_processor is not None:
             audio_buffer_processor.add_event_handler("on_audio_data", self._on_audio_data)
+
+        # Pipecat invokes ``on_push_frame`` for every processor-to-processor
+        # hop, so the same frame instance fires this callback N times. Dedupe
+        # by frame id so each transcription/TTS/tool-call frame is acted on
+        # exactly once — otherwise turns repeat ("Hello!Hello!Hello!").
+        self._seen_frame_ids: set[int] = set()
+
+    # ------------------------------------------------------------------ lifecycle
+
+    async def on_pipeline_started(self) -> None:  # type: ignore[override]
+        """Pipecat fires this once after ``StartFrame`` has propagated through
+        every processor — the canonical "call begins" hook.
+        """
+        if self._started_posted:
+            return
+        await self._post_call_started()
+        abp = self.audio_processor
+        if abp is not None:
+            try:
+                await abp.start_recording()
+            except Exception as err:  # pragma: no cover — defensive
+                log.warning("AudioBufferProcessor.start_recording failed: %r", err)
 
     # ------------------------------------------------------------------ frames
 
@@ -170,7 +213,6 @@ class RoarkObserver(BaseObserver):
             FunctionCallInProgressFrame,
             FunctionCallResultFrame,
             InterruptionFrame,
-            StartFrame,
             StopFrame,
             TranscriptionFrame,
             TTSTextFrame,
@@ -178,15 +220,24 @@ class RoarkObserver(BaseObserver):
 
         frame: Frame = data.frame
 
-        if isinstance(frame, StartFrame) and not self._started_posted:
-            await self._post_call_started()
-            abp = self._audio_buffer_processor
-            if abp is not None:
-                try:
-                    await abp.start_recording()
-                except Exception as err:  # pragma: no cover — defensive
-                    log.warning("AudioBufferProcessor.start_recording failed: %r", err)
+        handled_types = (
+            TranscriptionFrame,
+            TTSTextFrame,
+            BotStoppedSpeakingFrame,
+            InterruptionFrame,
+            FunctionCallInProgressFrame,
+            FunctionCallResultFrame,
+            EndFrame,
+            CancelFrame,
+            StopFrame,
+        )
+        if not isinstance(frame, handled_types):
             return
+        fid = getattr(frame, "id", None)
+        if isinstance(fid, int):
+            if fid in self._seen_frame_ids:
+                return
+            self._seen_frame_ids.add(fid)
 
         if isinstance(frame, TranscriptionFrame):
             # STT may emit interim frames too; only commit on finalize.
@@ -296,7 +347,7 @@ class RoarkObserver(BaseObserver):
 
         # Drain the processor's tail buffer before awaiting in-flight uploads so the
         # final chunk task is registered in the set.
-        abp = self._audio_buffer_processor
+        abp = self.audio_processor
         if abp is not None:
             try:
                 await abp.stop_recording()
@@ -345,6 +396,7 @@ class RoarkObserver(BaseObserver):
         # Per-call buffers are gone now that the POST has been acknowledged.
         self._transcript.clear()
         self._tool_calls.clear()
+        self._seen_frame_ids.clear()
 
     # ------------------------------------------------------------------ transcript
 
@@ -386,10 +438,9 @@ class RoarkObserver(BaseObserver):
             text = getattr(frame, "text", "") or ""
             if not text:
                 return
-            includes_spaces = bool(getattr(frame, "includes_inter_frame_spaces", False))
             if not self._assistant_text_parts:
                 self._assistant_start_iso = _utc_now_iso()
-            self._assistant_text_parts.append((text, includes_spaces))
+            self._assistant_text_parts.append(text)
         except Exception as err:  # pragma: no cover — defensive
             log.warning("failed to accumulate assistant text: %r", err)
 
@@ -397,7 +448,7 @@ class RoarkObserver(BaseObserver):
         if not self._assistant_text_parts:
             return
         try:
-            content = _concatenate_text_parts(self._assistant_text_parts).strip()
+            content = _join_tts_chunks(self._assistant_text_parts).strip()
             timestamp = self._assistant_start_iso or _utc_now_iso()
             self._assistant_text_parts = []
             self._assistant_start_iso = None
@@ -477,28 +528,18 @@ class RoarkObserver(BaseObserver):
         return "unknown"
 
 
-def _concatenate_text_parts(parts: list[tuple[str, bool]]) -> str:
-    """Join TTS text chunks, inserting spaces where the chunks didn't include them.
-
-    Mirrors Pipecat's ``concatenate_aggregated_text`` semantics so the assistant
-    transcript matches what the bot actually says.
+def _join_tts_chunks(parts: list[str]) -> str:
+    """Join ``TTSTextFrame.text`` chunks with a single space between non-empty
+    parts. ``TTSTextFrame`` is already aggregated (sentence / utterance), so its
+    text is fully spaced internally — we only need to separate consecutive chunks.
     """
     result = ""
-    last_had_spaces = False
-    for idx, (text, includes_spaces) in enumerate(parts):
+    for text in parts:
         if not text:
             continue
-        if (
-            idx > 0
-            and not last_had_spaces
-            and not includes_spaces
-            and result
-            and not result.endswith(" ")
-            and not text.startswith(" ")
-        ):
+        if result and not result.endswith(" ") and not text.startswith(" "):
             result += " "
         result += text
-        last_had_spaces = includes_spaces
     return result
 
 

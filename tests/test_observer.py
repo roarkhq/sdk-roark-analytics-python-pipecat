@@ -22,7 +22,6 @@ from pipecat.frames.frames import (  # noqa: E402
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     InterruptionFrame,
-    StartFrame,
     TranscriptionFrame,
     TTSTextFrame,
 )
@@ -113,12 +112,12 @@ class _FakeAudioBufferProcessor:
 
 
 @pytest.mark.asyncio
-async def test_start_frame_posts_call_started_with_required_fields() -> None:
+async def test_on_pipeline_started_posts_call_started_with_required_fields() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", agent_name="Agent 1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
 
     assert len(fake.started) == 1
     payload = fake.started[0]
@@ -131,7 +130,7 @@ async def test_start_frame_posts_call_started_with_required_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_frame_infers_phone_interface_from_phone_numbers() -> None:
+async def test_phone_interface_inferred_from_phone_numbers() -> None:
     obs = RoarkObserver(
         api_key="rk_test",
         agent_id="agent-1",
@@ -141,7 +140,7 @@ async def test_start_frame_infers_phone_interface_from_phone_numbers() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     assert fake.started[0]["interfaceType"] == "PHONE"
     assert fake.started[0]["agentPhoneNumber"] == "+15550000"
     assert fake.started[0]["customerPhoneNumber"] == "+15551111"
@@ -152,24 +151,24 @@ async def test_sampling_rate_forwarded_when_set_and_omitted_when_unset() -> None
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     assert "samplingRate" not in fake.started[0]
 
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", sampling_rate=0.25)
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     assert fake.started[0]["samplingRate"] == 0.25
 
 
 @pytest.mark.asyncio
-async def test_multiple_start_frames_only_post_call_started_once() -> None:
+async def test_multiple_on_pipeline_started_calls_only_post_once() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
     for _ in range(3):
-        await obs.on_push_frame(_push(StartFrame()))
+        await obs.on_pipeline_started()
     assert len(fake.started) == 1
 
 
@@ -179,7 +178,7 @@ async def test_double_flush_only_posts_once() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(_push(EndFrame()))
     await obs.on_push_frame(_push(EndFrame()))
 
@@ -192,7 +191,7 @@ async def test_user_and_assistant_turns_captured_from_raw_frames() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(
         _push(_user_frame("hello", user_id="user-42", timestamp="2026-05-18T12:00:00+00:00"))
     )
@@ -220,7 +219,7 @@ async def test_assistant_first_sets_agent_spoke_first() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(
         _push(TTSTextFrame(text="hi, how can I help?", aggregated_by="sentence"))
     )
@@ -236,7 +235,7 @@ async def test_interim_user_transcriptions_are_dropped() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     interim = TranscriptionFrame(text="hel", user_id="user", timestamp="t1")
     # `finalized` defaults to False on the dataclass; the observer must skip those.
     await obs.on_push_frame(_push(interim))
@@ -254,7 +253,7 @@ async def test_assistant_turn_flushed_on_end_frame_without_bot_stopped() -> None
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(_push(TTSTextFrame(text="goodbye", aggregated_by="sentence")))
     # Pipeline ends mid-utterance; the observer must still capture what was said.
     await obs.on_push_frame(_push(EndFrame()))
@@ -271,7 +270,7 @@ async def test_interruption_flushes_partial_assistant_turn() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(_push(TTSTextFrame(text="let me explain", aggregated_by="sentence")))
     await obs.on_push_frame(_push(InterruptionFrame()))
     await obs.on_push_frame(_push(_user_frame("actually never mind")))
@@ -288,7 +287,7 @@ async def test_tool_calls_emit_kind_discriminated_records() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(
         _push(
             FunctionCallInProgressFrame(
@@ -336,7 +335,7 @@ async def test_tool_call_string_arguments_pass_through_verbatim() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(
         _push(
             FunctionCallInProgressFrame(
@@ -361,8 +360,8 @@ async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
-    assert abp.start_calls == 1, "StartFrame should kick off recording on the processor"
+    await obs.on_pipeline_started()
+    assert abp.start_calls == 1, "on_pipeline_started should kick off recording on the processor"
 
     await abp.emit_audio(b"\x01\x02" * 512)
     await abp.emit_audio(b"\x03\x04" * 512)
@@ -387,13 +386,51 @@ async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_audio_true_creates_default_audio_processor() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", record_audio=True)
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    # Default processor is created and exposed for the user to splice into their pipeline.
+    from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+
+    abp = obs.audio_processor
+    assert isinstance(abp, AudioBufferProcessor)
+    # ``sample_rate`` is filled in by the pipeline at start; check the constructor-stored
+    # value instead. ``num_channels`` is set on the instance directly.
+    assert abp._init_sample_rate == 24000  # noqa: SLF001 — constructor input
+    assert abp.num_channels == 2
+
+    # on_pipeline_started must invoke start_recording on the auto-created processor.
+    calls: list[int] = []
+
+    async def _track() -> None:
+        calls.append(1)
+
+    abp.start_recording = _track  # type: ignore[method-assign]
+    await obs.on_pipeline_started()
+    assert calls == [1]
+
+
+def test_record_audio_and_processor_kwargs_are_mutually_exclusive() -> None:
+    abp = _FakeAudioBufferProcessor()
+    with pytest.raises(ValueError, match="record_audio=True or audio_buffer_processor"):
+        RoarkObserver(
+            api_key="rk_test",
+            agent_id="agent-1",
+            record_audio=True,
+            audio_buffer_processor=abp,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.asyncio
 async def test_audio_emit_after_end_is_dropped() -> None:
     abp = _FakeAudioBufferProcessor()
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", audio_buffer_processor=abp)
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(_push(EndFrame()))
 
     # Anything the processor emits post-flush should be discarded.
@@ -402,12 +439,64 @@ async def test_audio_emit_after_end_is_dropped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_same_frame_observed_multiple_times_is_deduped() -> None:
+    """Regression: Pipecat calls ``on_push_frame`` once per processor hop,
+    so the same frame instance fires N times. The observer must act once.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+
+    # Same TTSTextFrame instance pushed three times — as it would be across
+    # three processor hops in a real pipeline.
+    tts = TTSTextFrame(text="Hello!", aggregated_by="sentence")
+    for _ in range(3):
+        await obs.on_push_frame(_push(tts))
+
+    # Same TranscriptionFrame instance observed multiple times too.
+    user = _user_frame("hi there", timestamp="t1")
+    for _ in range(3):
+        await obs.on_push_frame(_push(user))
+
+    # Same tool-call frames repeated across hops.
+    invocation = FunctionCallInProgressFrame(
+        function_name="ping", tool_call_id="call_1", arguments={}
+    )
+    result = FunctionCallResultFrame(
+        function_name="ping", tool_call_id="call_1", arguments={}, result="pong"
+    )
+    for _ in range(3):
+        await obs.on_push_frame(_push(invocation))
+        await obs.on_push_frame(_push(result))
+
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    transcript = fake.ended[0]["transcript"]
+    # One assistant turn ("Hello!" — NOT "Hello!Hello!Hello!") and one user turn.
+    assistant = [m for m in transcript if m["role"] == "assistant"]
+    users = [m for m in transcript if m["role"] == "user"]
+    assert len(assistant) == 1
+    assert assistant[0]["content"] == "Hello!"
+    assert len(users) == 1
+    assert users[0]["content"] == "hi there"
+
+    # Tool call/result deduped to one each.
+    tool_calls = fake.ended[0]["toolCalls"]
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["kind"] == "tool_call"
+    assert tool_calls[1]["kind"] == "tool_result"
+
+
+@pytest.mark.asyncio
 async def test_call_ended_without_audio_omits_recording_fields() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_push_frame(_push(StartFrame()))
+    await obs.on_pipeline_started()
     await obs.on_push_frame(_push(EndFrame()))
 
     ended = fake.ended[0]
