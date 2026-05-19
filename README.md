@@ -30,49 +30,76 @@ Drop `RoarkObserver` into your pipeline's `observers=[...]` list — that's it.
 Transcripts and tool calls are captured automatically from the frames flowing
 through the pipeline; no extra processors required.
 
-Audio recording is opt-in: insert Pipecat's [`AudioBufferProcessor`](https://docs.pipecat.ai/server/utilities/audio/audio-recording)
-into the pipeline and hand the instance to `RoarkObserver`. The processor mixes
-user and bot audio into a single stereo PCM stream and emits chunks via
-`on_audio_data`, which the observer uploads to S3.
+### Minimal — transcripts and tool calls only
 
 ```python
-from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat_roark import RoarkObserver
-
-audio_buffer = AudioBufferProcessor(
-    sample_rate=24000,
-    num_channels=2,        # L=user, R=bot
-    buffer_size=256 * 1024,
-)
-
-pipeline = Pipeline([
-    transport.input(), stt, context_aggregator.user(), llm, tts,
-    audio_buffer,
-    transport.output(),
-    context_aggregator.assistant(),
-])
 
 task = PipelineTask(
     pipeline,
     params=PipelineParams(
-        observers=[
-            RoarkObserver(
-                api_key="rk_live_...",
-                agent_id="support-bot-v3",
-                agent_name="Support Bot v3",
-                agent_prompt=SYSTEM_PROMPT,
-                audio_buffer_processor=audio_buffer,
-            ),
-        ],
+        observers=[RoarkObserver(api_key="rk_live_...", agent_id="support-bot-v3")],
     ),
 )
 ```
 
-The observer:
+### With audio recording
 
-1. POSTs `call-started` on `StartFrame` and calls `audio_buffer.start_recording()`.
+Pass `record_audio=True` and the observer creates a sane-default
+[`AudioBufferProcessor`](https://docs.pipecat.ai/server/utilities/audio/audio-recording)
+(stereo 24 kHz, ~5.5 s chunks) exposed as `roark.audio_processor`. Splice it
+into your pipeline **after `transport.output()`** so it sees the bot's audio
+post-TTS:
+
+```python
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat_roark import RoarkObserver
+
+roark = RoarkObserver(
+    api_key="rk_live_...",
+    agent_id="support-bot-v3",
+    agent_name="Support Bot v3",
+    agent_prompt=SYSTEM_PROMPT,
+    record_audio=True,
+)
+
+pipeline = Pipeline([
+    transport.input(), stt, context_aggregator.user(), llm, tts,
+    transport.output(),
+    roark.audio_processor,          # after transport.output() — L=user, R=bot
+    context_aggregator.assistant(),
+])
+
+task = PipelineTask(pipeline, params=PipelineParams(observers=[roark]))
+```
+
+### Power-user: bring your own `AudioBufferProcessor`
+
+If you need to tune sample rate, channel count, or buffer size, instantiate
+`AudioBufferProcessor` yourself and pass it via `audio_buffer_processor=`:
+
+```python
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+
+audio_buffer = AudioBufferProcessor(sample_rate=16000, num_channels=1, buffer_size=128 * 1024)
+
+pipeline = Pipeline([..., transport.output(), audio_buffer, ...])
+
+RoarkObserver(
+    api_key="rk_live_...",
+    agent_id="support-bot-v3",
+    audio_buffer_processor=audio_buffer,
+)
+```
+
+`record_audio=True` and `audio_buffer_processor=` are mutually exclusive — pass
+one or the other.
+
+### What the observer does
+
+1. On pipeline start, POSTs `call-started` and starts recording (if enabled).
    The agent is lazy-registered on Roark the first time it sees this `agent_id`.
 2. Captures transcripts during the call:
      * **User turns** from `TranscriptionFrame` (final only — interim
@@ -94,15 +121,6 @@ Transcripts and tool calls are forwarded in Pipecat's native shape — Roark
 maps them to its internal schema on its side.
 
 Failures are logged and swallowed — the observer never raises into the pipeline.
-
-## Skipping audio capture
-
-Omit `audio_buffer_processor=` to skip recordings. The call still lands in Roark
-with transcripts and tool calls.
-
-```python
-RoarkObserver(api_key="rk_live_...", agent_id="support-bot-v3")
-```
 
 ## Telephony
 
@@ -134,6 +152,27 @@ async def _on_disconnect(_, __):
 
 `aflush()` is idempotent; the regular `EndFrame` path will no-op on the next call.
 
+## Troubleshooting
+
+**Do I need `enable_tracing=True` on `PipelineTask`?** No. `RoarkObserver`
+captures raw frames — it does not consume OpenTelemetry spans. The tracing flag
+is unrelated.
+
+**`call-ended` never POSTs.** Some transports (notably `SmallWebRTC`) tear down
+without pushing `EndFrame` through observers. Wire `aflush()` into your
+disconnect handler — see [WebRTC transports](#webrtc-transports).
+
+**Audio recording captures user audio only / bot audio only.** The
+`AudioBufferProcessor` must sit **after `transport.output()`** so it sees the
+bot's audio post-TTS. If it's placed earlier in the pipeline, the bot channel
+will be silent.
+
+**Transcripts arrive empty.** The observer warns
+`call-ended with empty transcript ... no TranscriptionFrame or TTSTextFrame was
+observed during the call` when nothing was captured. Usually this means the STT
+service isn't emitting finalized `TranscriptionFrame`s, or the pipeline ended
+before any speech was processed.
+
 ## Configuration reference
 
 | Parameter | Type | Default | Notes |
@@ -149,7 +188,8 @@ async def _on_disconnect(_, __):
 | `roark_webhook_url` | `str \| None` | `$ROARK_WEBHOOK_URL` (required) | |
 | `roark_chunk_upload_url_endpoint` | `str \| None` | `$ROARK_CHUNK_UPLOAD_URL_ENDPOINT` (required) | |
 | `sampling_rate` | `float \| None` | `None` | Per-call sampling rate. Accepts `0..1` or `0..100`. |
-| `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Provide an `AudioBufferProcessor` instance from your pipeline to enable recording. |
+| `record_audio` | `bool` | `False` | Create a default `AudioBufferProcessor` (stereo 24 kHz, ~256 KB chunks) accessible via `observer.audio_processor`. Mutually exclusive with `audio_buffer_processor`. |
+| `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` instance to control sample rate / channels / buffer size. |
 | `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. |
 
 ## Development
