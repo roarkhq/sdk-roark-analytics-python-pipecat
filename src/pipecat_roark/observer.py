@@ -12,14 +12,13 @@ captures everything it needs by watching raw frames flow through the pipeline.
   ``FunctionCallResultFrame``. Each is shipped as a discrete ``tool_call`` /
   ``tool_result`` record discriminated by ``kind``; Roark pairs them by
   ``toolCallId``.
-* **Audio** is delegated to Pipecat's ``AudioBufferProcessor``. Pass
-  ``record_audio=True`` and the observer creates one with sane defaults
-  (stereo, ~256 KB chunks; sample rate is adopted from the pipeline's
-  ``StartFrame`` so it tracks whatever the transport/provider negotiated —
-  8 kHz for Twilio/Telnyx, 16/24/48 kHz for Daily/LiveKit, etc.), exposed
-  as ``observer.audio_processor`` for the user to splice into their
-  pipeline. Power users may instead pass their own pre-configured instance via
-  ``audio_buffer_processor=``.
+* **Audio** is delegated to Pipecat's ``AudioBufferProcessor``. The observer
+  always creates one with sane defaults (stereo, ~256 KB chunks; sample rate
+  is adopted from the pipeline's ``StartFrame`` so it tracks whatever the
+  transport/provider negotiated — 8 kHz for Twilio/Telnyx, 16/24/48 kHz for
+  Daily/LiveKit, etc.), exposed as ``observer.audio_processor`` for the user
+  to splice into their pipeline. Power users may instead pass their own
+  pre-configured instance via ``audio_buffer_processor=``.
 
 Lifecycle:
 
@@ -65,9 +64,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 
 log = logging.getLogger("pipecat_roark.observer")
-
-CallDirection = Literal["INBOUND", "OUTBOUND"]
-InterfaceType = Literal["WEB", "PHONE"]
 
 
 def _utc_now_iso() -> str:
@@ -121,20 +117,13 @@ class RoarkObserver(BaseObserver):
         agent_prompt: str | None = None,
         agent_phone_number: str | None = None,
         customer_phone_number: str | None = None,
-        call_direction: CallDirection | None = None,
-        interface_type: InterfaceType | None = None,
         roark_webhook_url: str | None = None,
         roark_chunk_upload_url_endpoint: str | None = None,
         sampling_rate: float | None = None,
-        record_audio: bool = False,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
     ) -> None:
         super().__init__()
-        if record_audio and audio_buffer_processor is not None:
-            raise ValueError(
-                "pass either record_audio=True or audio_buffer_processor=..., not both"
-            )
 
         client_kwargs: dict[str, str] = {"api_key": api_key}
         if roark_webhook_url is not None:
@@ -148,8 +137,6 @@ class RoarkObserver(BaseObserver):
         self._agent_prompt = agent_prompt
         self._agent_phone_number = agent_phone_number
         self._customer_phone_number = customer_phone_number
-        self._call_direction = call_direction
-        self._interface_type = interface_type
         self._sampling_rate = sampling_rate
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
 
@@ -168,7 +155,7 @@ class RoarkObserver(BaseObserver):
         self._chunk_index = 0
         self._inflight_uploads: set[asyncio.Task[None]] = set()
 
-        if record_audio:
+        if audio_buffer_processor is None:
             from pipecat.processors.audio.audio_buffer_processor import (
                 AudioBufferProcessor as _AudioBufferProcessor,
             )
@@ -183,9 +170,8 @@ class RoarkObserver(BaseObserver):
                 num_channels=2,
                 buffer_size=256 * 1024,
             )
-        self.audio_processor: AudioBufferProcessor | None = audio_buffer_processor
-        if audio_buffer_processor is not None:
-            audio_buffer_processor.add_event_handler("on_audio_data", self._on_audio_data)
+        self.audio_processor: AudioBufferProcessor = audio_buffer_processor
+        audio_buffer_processor.add_event_handler("on_audio_data", self._on_audio_data)
 
         # Pipecat invokes ``on_push_frame`` for every processor-to-processor
         # hop, so the same frame instance fires this callback N times. Dedupe
@@ -202,12 +188,10 @@ class RoarkObserver(BaseObserver):
         if self._started_posted:
             return
         await self._post_call_started()
-        abp = self.audio_processor
-        if abp is not None:
-            try:
-                await abp.start_recording()
-            except Exception as err:  # pragma: no cover — defensive
-                log.warning("AudioBufferProcessor.start_recording failed: %r", err)
+        try:
+            await self.audio_processor.start_recording()
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("AudioBufferProcessor.start_recording failed: %r", err)
 
     # ------------------------------------------------------------------ frames
 
@@ -304,14 +288,6 @@ class RoarkObserver(BaseObserver):
             payload["agentPhoneNumber"] = self._agent_phone_number
         if self._customer_phone_number:
             payload["customerPhoneNumber"] = self._customer_phone_number
-        if self._call_direction:
-            payload["callDirection"] = self._call_direction
-        if self._interface_type:
-            payload["interfaceType"] = self._interface_type
-        elif self._agent_phone_number or self._customer_phone_number:
-            payload["interfaceType"] = "PHONE"
-        else:
-            payload["interfaceType"] = "WEB"
         if self._sampling_rate is not None:
             payload["samplingRate"] = self._sampling_rate
 
@@ -354,11 +330,10 @@ class RoarkObserver(BaseObserver):
         # Drain the processor's tail buffer before awaiting in-flight uploads so the
         # final chunk task is registered in the set.
         abp = self.audio_processor
-        if abp is not None:
-            try:
-                await abp.stop_recording()
-            except Exception as err:  # pragma: no cover — defensive
-                log.warning("AudioBufferProcessor.stop_recording failed: %r", err)
+        try:
+            await abp.stop_recording()
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("AudioBufferProcessor.stop_recording failed: %r", err)
 
         if self._inflight_uploads:
             await asyncio.gather(*list(self._inflight_uploads), return_exceptions=True)
@@ -374,7 +349,7 @@ class RoarkObserver(BaseObserver):
         }
         if self._first_speaker is not None:
             payload["agentSpokeFirst"] = self._first_speaker == "assistant"
-        if abp is not None and self._chunk_index > 0:
+        if self._chunk_index > 0:
             payload["recordingSampleRate"] = abp.sample_rate
             payload["recordingNumChannels"] = abp.num_channels
         if self._transcript:

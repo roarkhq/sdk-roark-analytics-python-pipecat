@@ -45,8 +45,6 @@ class CallStartedPayload(TypedDict, total=False):
     agentPrompt: str
     agentPhoneNumber: str
     customerPhoneNumber: str
-    callDirection: Literal["INBOUND", "OUTBOUND"]
-    interfaceType: Literal["WEB", "PHONE"]
     # Accepted as 0..1 or 0..100; Roark normalizes.
     samplingRate: float
 

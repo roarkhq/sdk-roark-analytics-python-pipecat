@@ -27,26 +27,13 @@ Both URL vars are required; the observer raises at construction if they're missi
 ## Usage
 
 Drop `RoarkObserver` into your pipeline's `observers=[...]` list — that's it.
-Transcripts and tool calls are captured automatically from the frames flowing
-through the pipeline; no extra processors required.
+Agent data, transcripts, and audio are captured automatically from the frames
+flowing through the pipeline; tool calls (invocations + results) ride inside the
+same `call-ended` payload when your LLM emits them.
 
-### Minimal — transcripts and tool calls only
+### Usage
 
-```python
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat_roark import RoarkObserver
-
-task = PipelineTask(
-    pipeline,
-    params=PipelineParams(
-        observers=[RoarkObserver(api_key="rk_live_...", agent_id="support-bot-v3")],
-    ),
-)
-```
-
-### With audio recording
-
-Pass `record_audio=True` and the observer creates a sane-default
+The observer always creates a sane-default
 [`AudioBufferProcessor`](https://docs.pipecat.ai/server/utilities/audio/audio-recording)
 (stereo, ~256 KB chunks) exposed as `roark.audio_processor`. The sample rate
 is **adopted from the pipeline's `StartFrame`** so it tracks whatever the
@@ -65,7 +52,6 @@ roark = RoarkObserver(
     agent_id="support-bot-v3",
     agent_name="Support Bot v3",
     agent_prompt=SYSTEM_PROMPT,
-    record_audio=True,
 )
 
 pipeline = Pipeline([
@@ -97,13 +83,10 @@ RoarkObserver(
 )
 ```
 
-`record_audio=True` and `audio_buffer_processor=` are mutually exclusive — pass
-one or the other.
-
 ### What the observer does
 
-1. On pipeline start, POSTs `call-started` and starts recording (if enabled).
-   The agent is lazy-registered on Roark the first time it sees this `agent_id`.
+1. On pipeline start, POSTs `call-started` and starts recording. The agent is
+   lazy-registered on Roark the first time it sees this `agent_id`.
 2. Captures transcripts during the call:
      * **User turns** from `TranscriptionFrame` (final only — interim
        transcriptions are ignored).
@@ -135,8 +118,6 @@ RoarkObserver(
     agent_id="support-bot-v3",
     agent_phone_number="+15551234567",
     customer_phone_number="+15559876543",
-    call_direction="INBOUND",
-    interface_type="PHONE",
     audio_buffer_processor=audio_buffer,
 )
 ```
@@ -155,11 +136,51 @@ async def _on_disconnect(_, __):
 
 `aflush()` is idempotent; the regular `EndFrame` path will no-op on the next call.
 
+## Correlating with Pipecat OpenTelemetry tracing
+
+If you also enable Pipecat's OpenTelemetry tracing (`PipelineTask(enable_tracing=True)`),
+generate **one** call ID up front and pass it to both sides — the observer's
+`pipecat_call_id` and `PipelineTask`'s `conversation_id` — so each Roark call
+can be looked up by the same value in your tracing backend:
+
+```python
+import uuid
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat_roark import RoarkObserver
+
+call_id = str(uuid.uuid4())   # or your own external ID (Twilio CallSid, DB row id, …)
+
+roark = RoarkObserver(
+    api_key="rk_live_...",
+    agent_id="support-bot-v3",
+    pipecat_call_id=call_id,   # appears on the Roark record as `pipecatCallId`
+)
+
+task = PipelineTask(
+    pipeline,
+    params=PipelineParams(observers=[roark]),
+    enable_tracing=True,
+    conversation_id=call_id,   # set as the `conversation.id` span attribute by Pipecat
+)
+```
+
+If you omit `pipecat_call_id` the observer generates one internally — fine for
+standalone use, but you won't be able to link a Roark call to its trace. With
+OpenTelemetry enabled, **always pass the same value to both**.
+
+Pipecat sets `conversation.id` as a **span attribute** on a root `"conversation"`
+span (and propagates it to every child span). The OTel `traceId` itself is
+auto-generated and unrelated to your call ID; correlation happens by attribute
+value. To find the trace for a Roark call, query your backend by
+`conversation.id = <pipecatCallId>` (e.g., Honeycomb: `where conversation.id = "..."`,
+Jaeger: tag filter, Datadog: `@conversation.id:...`).
+
 ## Troubleshooting
 
 **Do I need `enable_tracing=True` on `PipelineTask`?** No. `RoarkObserver`
 captures raw frames — it does not consume OpenTelemetry spans. The tracing flag
-is unrelated.
+is unrelated. If you *do* enable it and want Roark calls linked to their
+traces, see [Correlating with Pipecat OpenTelemetry tracing](#correlating-with-pipecat-opentelemetry-tracing).
 
 **`call-ended` never POSTs.** Some transports (notably `SmallWebRTC`) tear down
 without pushing `EndFrame` through observers. Wire `aflush()` into your
@@ -186,14 +207,11 @@ before any speech was processed.
 | `agent_prompt` | `str \| None` | `None` | System prompt. Persisted as the agent's prompt revision. |
 | `agent_phone_number` | `str \| None` | `None` | E.164. |
 | `customer_phone_number` | `str \| None` | `None` | E.164. |
-| `call_direction` | `'INBOUND' \| 'OUTBOUND' \| None` | inferred | |
-| `interface_type` | `'WEB' \| 'PHONE' \| None` | inferred from phone numbers | |
 | `roark_webhook_url` | `str \| None` | `$ROARK_WEBHOOK_URL` (required) | |
 | `roark_chunk_upload_url_endpoint` | `str \| None` | `$ROARK_CHUNK_UPLOAD_URL_ENDPOINT` (required) | |
 | `sampling_rate` | `float \| None` | `None` | Per-call sampling rate. Accepts `0..1` or `0..100`. |
-| `record_audio` | `bool` | `False` | Create a default `AudioBufferProcessor` (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame` so it tracks the provider) accessible via `observer.audio_processor`. Mutually exclusive with `audio_buffer_processor`. |
-| `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` instance to control sample rate / channels / buffer size. |
-| `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. |
+| `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default one (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
+| `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. Generated internally if omitted. Pass the same value to `PipelineTask(conversation_id=...)` when OTel tracing is enabled — see [Correlating with Pipecat OpenTelemetry tracing](#correlating-with-pipecat-opentelemetry-tracing). |
 
 ## Development
 

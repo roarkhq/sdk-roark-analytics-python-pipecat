@@ -124,13 +124,14 @@ async def test_on_pipeline_started_posts_call_started_with_required_fields() -> 
     assert payload["event"] == "call-started"
     assert payload["agentId"] == "agent-1"
     assert payload["agentName"] == "Agent 1"
-    assert payload["interfaceType"] == "WEB"
+    assert "interfaceType" not in payload
+    assert "callDirection" not in payload
     assert "pipecatCallId" in payload
     assert "eventTimestamp" in payload
 
 
 @pytest.mark.asyncio
-async def test_phone_interface_inferred_from_phone_numbers() -> None:
+async def test_phone_numbers_forwarded_on_call_started() -> None:
     obs = RoarkObserver(
         api_key="rk_test",
         agent_id="agent-1",
@@ -141,9 +142,10 @@ async def test_phone_interface_inferred_from_phone_numbers() -> None:
     obs._client = fake  # type: ignore[assignment]
 
     await obs.on_pipeline_started()
-    assert fake.started[0]["interfaceType"] == "PHONE"
     assert fake.started[0]["agentPhoneNumber"] == "+15550000"
     assert fake.started[0]["customerPhoneNumber"] == "+15551111"
+    assert "interfaceType" not in fake.started[0]
+    assert "callDirection" not in fake.started[0]
 
 
 @pytest.mark.asyncio
@@ -386,8 +388,8 @@ async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_audio_true_creates_default_audio_processor() -> None:
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", record_audio=True)
+async def test_default_audio_processor_is_created_when_none_passed() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
@@ -411,17 +413,6 @@ async def test_record_audio_true_creates_default_audio_processor() -> None:
     abp.start_recording = _track  # type: ignore[method-assign]
     await obs.on_pipeline_started()
     assert calls == [1]
-
-
-def test_record_audio_and_processor_kwargs_are_mutually_exclusive() -> None:
-    abp = _FakeAudioBufferProcessor()
-    with pytest.raises(ValueError, match="record_audio=True or audio_buffer_processor"):
-        RoarkObserver(
-            api_key="rk_test",
-            agent_id="agent-1",
-            record_audio=True,
-            audio_buffer_processor=abp,  # type: ignore[arg-type]
-        )
 
 
 @pytest.mark.asyncio

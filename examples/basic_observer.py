@@ -5,9 +5,9 @@ Configuration via env (see ``.env.example``):
 - ``ROARK_WEBHOOK_URL``
 - ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT``
 
-Pass ``record_audio=True`` and the observer creates a default
-``AudioBufferProcessor`` (stereo 24 kHz, ~256 KB chunks) exposed as
-``roark.audio_processor``. Splice it into your pipeline *after*
+The observer always creates a default ``AudioBufferProcessor`` (stereo,
+~256 KB chunks; sample rate adopted from the pipeline's ``StartFrame``)
+exposed as ``roark.audio_processor``. Splice it into your pipeline *after*
 ``transport.output()`` so the bot channel sees post-TTS audio. The processor
 mixes user and bot audio, inserts silence during gaps, and emits chunks via
 ``on_audio_data`` which the observer ships to S3.
@@ -34,7 +34,6 @@ async def main() -> None:
         agent_id="example-agent",
         agent_name="Example Agent",
         agent_prompt="You are a helpful voice assistant.",
-        record_audio=True,
     )
 
     pipeline = Pipeline([
