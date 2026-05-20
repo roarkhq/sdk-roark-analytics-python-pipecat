@@ -58,6 +58,10 @@ class CallEndedPayload(TypedDict, total=False):
     callEndedAt: str | None
     callEndedReason: str
     agentSpokeFirst: bool
+    # Forwarded verbatim from the observer's ``direction=`` kwarg. Defaults to
+    # "inbound" — most pipelines serve incoming calls (webhooks / WebRTC peers
+    # joining), so outbound dialers are the ones who need to override.
+    direction: Literal["inbound", "outbound"]
     recordingSampleRate: int
     recordingNumChannels: int
     transcript: list[TranscriptMessage]

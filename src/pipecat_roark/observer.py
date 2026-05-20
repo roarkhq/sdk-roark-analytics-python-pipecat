@@ -122,6 +122,7 @@ class RoarkObserver(BaseObserver):
         sampling_rate: float | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
+        direction: Literal["inbound", "outbound"] = "inbound",
     ) -> None:
         super().__init__()
 
@@ -139,6 +140,7 @@ class RoarkObserver(BaseObserver):
         self._customer_phone_number = customer_phone_number
         self._sampling_rate = sampling_rate
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
+        self._direction = direction
 
         self._transcript: list[TranscriptMessage] = []
         self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
@@ -349,6 +351,7 @@ class RoarkObserver(BaseObserver):
         }
         if self._first_speaker is not None:
             payload["agentSpokeFirst"] = self._first_speaker == "assistant"
+        payload["direction"] = self._direction
         if self._chunk_index > 0:
             payload["recordingSampleRate"] = abp.sample_rate
             payload["recordingNumChannels"] = abp.num_channels

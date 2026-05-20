@@ -110,7 +110,9 @@ Failures are logged and swallowed — the observer never raises into the pipelin
 
 ## Telephony
 
-When you wire a telephony serializer (Twilio / Telnyx / Plivo / SIP), pass the numbers:
+When you wire a telephony serializer (Twilio / Telnyx / Plivo / SIP), pass the
+numbers. Set `direction="outbound"` when the agent is placing the call;
+inbound is the default.
 
 ```python
 RoarkObserver(
@@ -118,9 +120,17 @@ RoarkObserver(
     agent_id="support-bot-v3",
     agent_phone_number="+15551234567",
     customer_phone_number="+15559876543",
+    direction="outbound",   # omit for inbound calls
     audio_buffer_processor=audio_buffer,
 )
 ```
+
+### Call direction
+
+`direction` defaults to `"inbound"` (most pipelines serve incoming calls).
+Override with `direction="outbound"` when you're placing the call. The value is
+forwarded verbatim on the `call-ended` payload — the observer doesn't try to
+guess from frames.
 
 ## WebRTC transports
 
@@ -212,6 +222,7 @@ before any speech was processed.
 | `sampling_rate` | `float \| None` | `None` | Per-call sampling rate. Accepts `0..1` or `0..100`. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default one (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
 | `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. Generated internally if omitted. Pass the same value to `PipelineTask(conversation_id=...)` when OTel tracing is enabled — see [Correlating with Pipecat OpenTelemetry tracing](#correlating-with-pipecat-opentelemetry-tracing). |
+| `direction` | `Literal["inbound", "outbound"]` | `"inbound"` | Forwarded verbatim on `call-ended` as `direction`. Override to `"outbound"` for dial-out pipelines. See [Call direction](#call-direction). |
 
 ## Development
 

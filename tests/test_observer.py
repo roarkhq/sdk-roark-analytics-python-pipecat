@@ -494,3 +494,31 @@ async def test_call_ended_without_audio_omits_recording_fields() -> None:
     ended = fake.ended[0]
     assert "recordingSampleRate" not in ended
     assert "recordingNumChannels" not in ended
+
+
+@pytest.mark.asyncio
+async def test_direction_forwarded_verbatim_when_set() -> None:
+    """``direction`` is passed by the caller (who always knows whether the call
+    was inbound or outbound) and forwarded as-is on the call-ended payload.
+    """
+    for value in ("inbound", "outbound"):
+        obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", direction=value)
+        fake = _FakeClient()
+        obs._client = fake  # type: ignore[assignment]
+
+        await obs.on_pipeline_started()
+        await obs.on_push_frame(_push(EndFrame()))
+
+        assert fake.ended[0]["direction"] == value
+
+
+@pytest.mark.asyncio
+async def test_direction_defaults_to_inbound_when_not_set() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.ended[0]["direction"] == "inbound"
