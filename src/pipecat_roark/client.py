@@ -22,7 +22,11 @@ log = logging.getLogger("pipecat_roark.client")
 
 
 class RoarkClient:
-    """Async HTTP client for the Pipecat observer endpoints on Roark."""
+    """Async HTTP client for the Pipecat observer endpoints on Roark.
+
+    All methods are best-effort: failures are logged and surfaced via return
+    values, never raised. The observer must never break the surrounding call.
+    """
 
     def __init__(
         self,
@@ -31,6 +35,22 @@ class RoarkClient:
         webhook_url: str | None = None,
         chunk_upload_url_endpoint: str | None = None,
     ) -> None:
+        """Initialise the client.
+
+        Args:
+            api_key: Roark API key (e.g. ``rk_live_...``). Sent on every Roark
+                request as ``x-roark-api-key`` *and* ``Authorization: Bearer``
+                so both the webhook and the customer-api router accept it.
+            webhook_url: Roark webhook endpoint that receives ``call-started``
+                / ``call-ended`` POSTs. Falls back to ``ROARK_WEBHOOK_URL``.
+            chunk_upload_url_endpoint: Endpoint that mints presigned S3 PUT
+                URLs for audio chunks. Falls back to
+                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT``.
+
+        Raises:
+            ValueError: If neither the kwarg nor the corresponding env var is
+                set for ``webhook_url`` or ``chunk_upload_url_endpoint``.
+        """
         self._api_key = api_key
         self._webhook_url = webhook_url or os.environ.get("ROARK_WEBHOOK_URL")
         if not self._webhook_url:
@@ -66,6 +86,7 @@ class RoarkClient:
         return self._s3_client
 
     async def aclose(self) -> None:
+        """Close both underlying ``httpx.AsyncClient`` pools."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -74,9 +95,25 @@ class RoarkClient:
             self._s3_client = None
 
     async def post_call_started(self, payload: CallStartedPayload) -> bool:
+        """POST a ``call-started`` event to the Roark webhook.
+
+        Args:
+            payload: Wire-format payload — see ``CallStartedPayload``.
+
+        Returns:
+            ``True`` if the webhook returned 2xx, ``False`` otherwise.
+        """
         return await self._post_event(dict(payload))
 
     async def post_call_ended(self, payload: CallEndedPayload) -> bool:
+        """POST a ``call-ended`` event to the Roark webhook.
+
+        Args:
+            payload: Wire-format payload — see ``CallEndedPayload``.
+
+        Returns:
+            ``True`` if the webhook returned 2xx, ``False`` otherwise.
+        """
         return await self._post_event(dict(payload))
 
     async def request_chunk_upload_url(
@@ -86,7 +123,19 @@ class RoarkClient:
         chunk_index: int,
         content_type: str = "audio/pcm",
     ) -> ChunkUploadUrlResponse | None:
-        """Ask Roark for a one-shot presigned PUT URL for a single audio chunk."""
+        """Ask Roark for a one-shot presigned PUT URL for a single audio chunk.
+
+        Args:
+            pipecat_call_id: Stable call identifier (matches the value sent on
+                ``call-started`` / ``call-ended``).
+            chunk_index: Zero-based index of this chunk within the call.
+            content_type: Content-Type the subsequent PUT will use; default
+                ``audio/pcm``.
+
+        Returns:
+            The parsed upload response on success (containing ``uploadUrl``),
+            or ``None`` if the request failed or the response was malformed.
+        """
         client = self._ensure_client()
         body: dict[str, Any] = {
             "pipecatCallId": pipecat_call_id,
@@ -114,7 +163,18 @@ class RoarkClient:
     async def upload_chunk(
         self, *, upload_url: str, body: bytes, content_type: str = "audio/pcm"
     ) -> bool:
-        """PUT a single audio chunk to the presigned S3 URL. True on 2xx."""
+        """PUT a single audio chunk to the presigned S3 URL.
+
+        Args:
+            upload_url: Presigned S3 URL returned by
+                ``request_chunk_upload_url``.
+            body: Raw PCM bytes for this chunk.
+            content_type: Content-Type header to send; must match the value
+                used when minting the presigned URL.
+
+        Returns:
+            ``True`` if S3 returned 2xx, ``False`` otherwise.
+        """
         s3 = self._ensure_s3_client()
         try:
             resp = await s3.put(upload_url, content=body, headers={"content-type": content_type})
