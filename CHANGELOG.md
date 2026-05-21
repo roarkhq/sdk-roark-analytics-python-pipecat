@@ -30,8 +30,6 @@ lifecycle, transcripts, tool calls, and audio recordings to Roark.
   repeat N times).
 - `aflush(reason=...)` idempotent escape hatch for WebRTC transports that
   tear down without pushing `EndFrame` (notably `SmallWebRTC`).
-- `direction` kwarg (`"inbound"` / `"outbound"`, default `"inbound"`)
-  forwarded verbatim on the `call-ended` payload.
 - OpenTelemetry correlation via shared `pipecat_call_id` ↔
   `PipelineTask.conversation_id`.
 
@@ -40,8 +38,8 @@ lifecycle, transcripts, tool calls, and audio recordings to Roark.
 - `ROARK_WEBHOOK_URL` and `ROARK_CHUNK_UPLOAD_URL_ENDPOINT` env vars (or
   matching constructor kwargs) are required at construction time.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
-  `agent_phone_number`, `customer_phone_number`, `sampling_rate`,
-  `pipecat_call_id`, `audio_buffer_processor`, `direction` are optional.
+  `sampling_rate`, `pipecat_call_id`, `audio_buffer_processor` are
+  optional.
 
 [Unreleased]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/roarkhq/pipecat-roark/releases/tag/v0.1.0
