@@ -10,7 +10,11 @@ tool calls, and audio recordings — no other code changes required.
 pip install pipecat-roark
 ```
 
-Requires Python 3.10+ and `pipecat-ai >= 0.0.40`.
+Requires Python 3.10+ and `pipecat-ai >= 0.0.40`. Tested with `pipecat-ai` 0.0.108.
+
+> Maintained by [Roark](https://roark.ai) — the company providing the analytics
+> service this observer ships data to. File issues at
+> <https://github.com/roarkhq/pipecat-roark/issues>.
 
 ## Configuration
 
@@ -108,30 +112,6 @@ maps them to its internal schema on its side.
 
 Failures are logged and swallowed — the observer never raises into the pipeline.
 
-## Telephony
-
-When you wire a telephony serializer (Twilio / Telnyx / Plivo / SIP), pass the
-numbers. Set `direction="outbound"` when the agent is placing the call;
-inbound is the default.
-
-```python
-RoarkObserver(
-    api_key="rk_live_...",
-    agent_id="support-bot-v3",
-    agent_phone_number="+15551234567",
-    customer_phone_number="+15559876543",
-    direction="outbound",   # omit for inbound calls
-    audio_buffer_processor=audio_buffer,
-)
-```
-
-### Call direction
-
-`direction` defaults to `"inbound"` (most pipelines serve incoming calls).
-Override with `direction="outbound"` when you're placing the call. The value is
-forwarded verbatim on the `call-ended` payload — the observer doesn't try to
-guess from frames.
-
 ## WebRTC transports
 
 Pipecat's WebRTC transports (notably `SmallWebRTC`) sometimes tear down without
@@ -185,6 +165,20 @@ value. To find the trace for a Roark call, query your backend by
 `conversation.id = <pipecatCallId>` (e.g., Honeycomb: `where conversation.id = "..."`,
 Jaeger: tag filter, Datadog: `@conversation.id:...`).
 
+## Running the example
+
+A minimal wiring example lives at `examples/basic_observer.py` — it shows where
+`RoarkObserver` and `roark.audio_processor` slot into a `Pipeline` and
+`PipelineTask`. The transport / STT / LLM / TTS stages are commented out so the
+file stays self-contained; copy them into your own pipeline.
+
+```bash
+cp .env.example .env
+# fill in ROARK_API_KEY, ROARK_WEBHOOK_URL, ROARK_CHUNK_UPLOAD_URL_ENDPOINT
+uv sync --all-extras
+uv run python examples/basic_observer.py
+```
+
 ## Troubleshooting
 
 **Do I need `enable_tracing=True` on `PipelineTask`?** No. `RoarkObserver`
@@ -215,14 +209,11 @@ before any speech was processed.
 | `agent_id` | `str` | — | Required. Customer-stable agent identifier. |
 | `agent_name` | `str \| None` | `None` | Display name. |
 | `agent_prompt` | `str \| None` | `None` | System prompt. Persisted as the agent's prompt revision. |
-| `agent_phone_number` | `str \| None` | `None` | E.164. |
-| `customer_phone_number` | `str \| None` | `None` | E.164. |
 | `roark_webhook_url` | `str \| None` | `$ROARK_WEBHOOK_URL` (required) | |
 | `roark_chunk_upload_url_endpoint` | `str \| None` | `$ROARK_CHUNK_UPLOAD_URL_ENDPOINT` (required) | |
 | `sampling_rate` | `float \| None` | `None` | Per-call sampling rate. Accepts `0..1` or `0..100`. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default one (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
 | `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. Generated internally if omitted. Pass the same value to `PipelineTask(conversation_id=...)` when OTel tracing is enabled — see [Correlating with Pipecat OpenTelemetry tracing](#correlating-with-pipecat-opentelemetry-tracing). |
-| `direction` | `Literal["inbound", "outbound"]` | `"inbound"` | Forwarded verbatim on `call-ended` as `direction`. Override to `"outbound"` for dial-out pipelines. See [Call direction](#call-direction). |
 
 ## Development
 
