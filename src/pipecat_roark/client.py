@@ -52,16 +52,18 @@ class RoarkClient:
                 set for ``webhook_url`` or ``chunk_upload_url_endpoint``.
         """
         self._api_key = api_key
-        self._webhook_url = webhook_url or os.environ.get("ROARK_WEBHOOK_URL")
-        if not self._webhook_url:
+        webhook = webhook_url or os.environ.get("ROARK_WEBHOOK_URL")
+        if not webhook:
             raise ValueError("Set ROARK_WEBHOOK_URL env var or pass webhook_url=")
-        self._chunk_upload_url_endpoint = (
-            chunk_upload_url_endpoint or os.environ.get("ROARK_CHUNK_UPLOAD_URL_ENDPOINT")
+        self._webhook_url: str = webhook
+        chunk_endpoint = chunk_upload_url_endpoint or os.environ.get(
+            "ROARK_CHUNK_UPLOAD_URL_ENDPOINT"
         )
-        if not self._chunk_upload_url_endpoint:
+        if not chunk_endpoint:
             raise ValueError(
                 "Set ROARK_CHUNK_UPLOAD_URL_ENDPOINT env var or pass chunk_upload_url_endpoint="
             )
+        self._chunk_upload_url_endpoint: str = chunk_endpoint
         self._client: httpx.AsyncClient | None = None
         self._s3_client: httpx.AsyncClient | None = None
 
