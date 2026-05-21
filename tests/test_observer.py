@@ -131,24 +131,6 @@ async def test_on_pipeline_started_posts_call_started_with_required_fields() -> 
 
 
 @pytest.mark.asyncio
-async def test_phone_numbers_forwarded_on_call_started() -> None:
-    obs = RoarkObserver(
-        api_key="rk_test",
-        agent_id="agent-1",
-        agent_phone_number="+15550000",
-        customer_phone_number="+15551111",
-    )
-    fake = _FakeClient()
-    obs._client = fake  # type: ignore[assignment]
-
-    await obs.on_pipeline_started()
-    assert fake.started[0]["agentPhoneNumber"] == "+15550000"
-    assert fake.started[0]["customerPhoneNumber"] == "+15551111"
-    assert "interfaceType" not in fake.started[0]
-    assert "callDirection" not in fake.started[0]
-
-
-@pytest.mark.asyncio
 async def test_sampling_rate_forwarded_when_set_and_omitted_when_unset() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
@@ -496,29 +478,3 @@ async def test_call_ended_without_audio_omits_recording_fields() -> None:
     assert "recordingNumChannels" not in ended
 
 
-@pytest.mark.asyncio
-async def test_direction_forwarded_verbatim_when_set() -> None:
-    """``direction`` is passed by the caller (who always knows whether the call
-    was inbound or outbound) and forwarded as-is on the call-ended payload.
-    """
-    for value in ("inbound", "outbound"):
-        obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", direction=value)
-        fake = _FakeClient()
-        obs._client = fake  # type: ignore[assignment]
-
-        await obs.on_pipeline_started()
-        await obs.on_push_frame(_push(EndFrame()))
-
-        assert fake.ended[0]["direction"] == value
-
-
-@pytest.mark.asyncio
-async def test_direction_defaults_to_inbound_when_not_set() -> None:
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
-    fake = _FakeClient()
-    obs._client = fake  # type: ignore[assignment]
-
-    await obs.on_pipeline_started()
-    await obs.on_push_frame(_push(EndFrame()))
-
-    assert fake.ended[0]["direction"] == "inbound"

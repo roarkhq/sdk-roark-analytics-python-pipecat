@@ -115,14 +115,11 @@ class RoarkObserver(BaseObserver):
         agent_id: str,
         agent_name: str | None = None,
         agent_prompt: str | None = None,
-        agent_phone_number: str | None = None,
-        customer_phone_number: str | None = None,
         roark_webhook_url: str | None = None,
         roark_chunk_upload_url_endpoint: str | None = None,
         sampling_rate: float | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
-        direction: Literal["inbound", "outbound"] = "inbound",
     ) -> None:
         super().__init__()
 
@@ -136,11 +133,8 @@ class RoarkObserver(BaseObserver):
         self._agent_id = agent_id
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
-        self._agent_phone_number = agent_phone_number
-        self._customer_phone_number = customer_phone_number
         self._sampling_rate = sampling_rate
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
-        self._direction = direction
 
         self._transcript: list[TranscriptMessage] = []
         self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
@@ -286,10 +280,6 @@ class RoarkObserver(BaseObserver):
             payload["agentName"] = self._agent_name
         if self._agent_prompt:
             payload["agentPrompt"] = self._agent_prompt
-        if self._agent_phone_number:
-            payload["agentPhoneNumber"] = self._agent_phone_number
-        if self._customer_phone_number:
-            payload["customerPhoneNumber"] = self._customer_phone_number
         if self._sampling_rate is not None:
             payload["samplingRate"] = self._sampling_rate
 
@@ -351,7 +341,6 @@ class RoarkObserver(BaseObserver):
         }
         if self._first_speaker is not None:
             payload["agentSpokeFirst"] = self._first_speaker == "assistant"
-        payload["direction"] = self._direction
         if self._chunk_index > 0:
             payload["recordingSampleRate"] = abp.sample_rate
             payload["recordingNumChannels"] = abp.num_channels

@@ -13,6 +13,8 @@ from typing import Literal, TypedDict
 
 
 class TranscriptMessage(TypedDict, total=False):
+    """One turn in the call transcript, either user-spoken or assistant-spoken."""
+
     role: Literal["assistant", "user", "system"]
     content: str
     timestamp: str  # ISO 8601 UTC
@@ -21,6 +23,8 @@ class TranscriptMessage(TypedDict, total=False):
 
 
 class ToolCallMessage(TypedDict, total=False):
+    """Tool invocation emitted by the LLM (paired by ``toolCallId`` with a result)."""
+
     kind: Literal["tool_call"]
     toolCallId: str
     name: str
@@ -29,6 +33,8 @@ class ToolCallMessage(TypedDict, total=False):
 
 
 class ToolResultMessage(TypedDict, total=False):
+    """Tool execution result returned to the LLM (paired by ``toolCallId``)."""
+
     kind: Literal["tool_result"]
     toolCallId: str
     content: str  # stringified result (json.dumps for objects, str() for scalars)
@@ -36,6 +42,8 @@ class ToolResultMessage(TypedDict, total=False):
 
 
 class CallStartedPayload(TypedDict, total=False):
+    """Webhook body POSTed to Roark when the pipeline starts the call."""
+
     event: Literal["call-started"]
     pipecatCallId: str
     eventTimestamp: str  # ISO 8601 UTC
@@ -43,13 +51,18 @@ class CallStartedPayload(TypedDict, total=False):
     agentId: str
     agentName: str
     agentPrompt: str
-    agentPhoneNumber: str
-    customerPhoneNumber: str
     # Accepted as 0..1 or 0..100; Roark normalizes.
     samplingRate: float
 
 
 class CallEndedPayload(TypedDict, total=False):
+    """Webhook body POSTed to Roark when the pipeline ends the call.
+
+    Contains the full transcript, tool-call timeline, and recording metadata.
+    Roark stitches the previously-uploaded PCM chunks into a WAV using the
+    ``recordingSampleRate`` / ``recordingNumChannels`` fields.
+    """
+
     event: Literal["call-ended"]
     pipecatCallId: str
     eventTimestamp: str  # ISO 8601 UTC
@@ -58,10 +71,6 @@ class CallEndedPayload(TypedDict, total=False):
     callEndedAt: str | None
     callEndedReason: str
     agentSpokeFirst: bool
-    # Forwarded verbatim from the observer's ``direction=`` kwarg. Defaults to
-    # "inbound" — most pipelines serve incoming calls (webhooks / WebRTC peers
-    # joining), so outbound dialers are the ones who need to override.
-    direction: Literal["inbound", "outbound"]
     recordingSampleRate: int
     recordingNumChannels: int
     transcript: list[TranscriptMessage]
@@ -69,6 +78,8 @@ class CallEndedPayload(TypedDict, total=False):
 
 
 class ChunkUploadUrlResponse(TypedDict, total=False):
+    """Response from the Roark chunk-upload endpoint — a one-shot presigned S3 PUT."""
+
     uploadUrl: str
     s3Key: str
     chunkIndex: int
