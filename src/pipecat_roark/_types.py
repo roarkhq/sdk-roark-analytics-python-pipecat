@@ -51,8 +51,6 @@ class CallStartedPayload(TypedDict, total=False):
     agentId: str
     agentName: str
     agentPrompt: str
-    # Accepted as 0..1 or 0..100; Roark normalizes.
-    samplingRate: float
 
 
 class CallEndedPayload(TypedDict, total=False):

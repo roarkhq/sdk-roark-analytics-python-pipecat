@@ -117,7 +117,6 @@ class RoarkObserver(BaseObserver):
         agent_prompt: str | None = None,
         roark_webhook_url: str | None = None,
         roark_chunk_upload_url_endpoint: str | None = None,
-        sampling_rate: float | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
     ) -> None:
@@ -133,7 +132,6 @@ class RoarkObserver(BaseObserver):
         self._agent_id = agent_id
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
-        self._sampling_rate = sampling_rate
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
 
         self._transcript: list[TranscriptMessage] = []
@@ -280,8 +278,6 @@ class RoarkObserver(BaseObserver):
             payload["agentName"] = self._agent_name
         if self._agent_prompt:
             payload["agentPrompt"] = self._agent_prompt
-        if self._sampling_rate is not None:
-            payload["samplingRate"] = self._sampling_rate
 
         log.info("call-started: pipecatCallId=%s agentId=%s", self._pipecat_call_id, self._agent_id)
         await self._client.post_call_started(payload)

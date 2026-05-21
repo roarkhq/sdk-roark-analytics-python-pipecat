@@ -211,7 +211,6 @@ before any speech was processed.
 | `agent_prompt` | `str \| None` | `None` | System prompt. Persisted as the agent's prompt revision. |
 | `roark_webhook_url` | `str \| None` | `$ROARK_WEBHOOK_URL` (required) | |
 | `roark_chunk_upload_url_endpoint` | `str \| None` | `$ROARK_CHUNK_UPLOAD_URL_ENDPOINT` (required) | |
-| `sampling_rate` | `float \| None` | `None` | Per-call sampling rate. Accepts `0..1` or `0..100`. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override: pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default one (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
 | `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. Generated internally if omitted. Pass the same value to `PipelineTask(conversation_id=...)` when OTel tracing is enabled — see [Correlating with Pipecat OpenTelemetry tracing](#correlating-with-pipecat-opentelemetry-tracing). |
 

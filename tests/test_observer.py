@@ -131,21 +131,6 @@ async def test_on_pipeline_started_posts_call_started_with_required_fields() -> 
 
 
 @pytest.mark.asyncio
-async def test_sampling_rate_forwarded_when_set_and_omitted_when_unset() -> None:
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
-    fake = _FakeClient()
-    obs._client = fake  # type: ignore[assignment]
-    await obs.on_pipeline_started()
-    assert "samplingRate" not in fake.started[0]
-
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", sampling_rate=0.25)
-    fake = _FakeClient()
-    obs._client = fake  # type: ignore[assignment]
-    await obs.on_pipeline_started()
-    assert fake.started[0]["samplingRate"] == 0.25
-
-
-@pytest.mark.asyncio
 async def test_multiple_on_pipeline_started_calls_only_post_once() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
