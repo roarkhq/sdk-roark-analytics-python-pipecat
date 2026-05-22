@@ -131,8 +131,6 @@ class RoarkObserver(BaseObserver):
         agent_id: str,
         agent_name: str | None = None,
         agent_prompt: str | None = None,
-        roark_webhook_url: str | None = None,
-        roark_chunk_upload_url_endpoint: str | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
     ) -> None:
@@ -147,13 +145,6 @@ class RoarkObserver(BaseObserver):
             agent_prompt: System prompt for the agent. Persisted as the
                 agent's prompt revision so prompt changes are tracked over
                 time.
-            roark_webhook_url: Override the ``ROARK_WEBHOOK_URL`` env var.
-                Required at construction time — either as a kwarg or via env;
-                the observer raises if neither is set.
-            roark_chunk_upload_url_endpoint: Override the
-                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT`` env var. Required at
-                construction time — either as a kwarg or via env; the
-                observer raises if neither is set.
             audio_buffer_processor: Bring-your-own ``AudioBufferProcessor`` to
                 tune sample rate, channel count, or buffer size. If omitted,
                 the observer creates a default (stereo, ~256 KB chunks;
@@ -165,15 +156,15 @@ class RoarkObserver(BaseObserver):
                 the same value to ``PipelineTask(conversation_id=...)`` when
                 OpenTelemetry tracing is enabled so each Roark call can be
                 looked up by ``conversation.id`` in your tracing backend.
+
+        Raises:
+            ValueError: If ``ROARK_WEBHOOK_URL`` or
+                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT`` is not set in the
+                environment.
         """
         super().__init__()
 
-        client_kwargs: dict[str, str] = {"api_key": api_key}
-        if roark_webhook_url is not None:
-            client_kwargs["webhook_url"] = roark_webhook_url
-        if roark_chunk_upload_url_endpoint is not None:
-            client_kwargs["chunk_upload_url_endpoint"] = roark_chunk_upload_url_endpoint
-        self._client = RoarkClient(**client_kwargs)
+        self._client = RoarkClient(api_key=api_key)
 
         self._agent_id = agent_id
         self._agent_name = agent_name

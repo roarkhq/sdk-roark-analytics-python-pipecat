@@ -41,7 +41,7 @@ pip install pipecat-roark
 
 ### 2. Configure
 
-Set three env vars (or pass them as kwargs to `RoarkObserver`):
+Set three env vars:
 
 ```bash
 ROARK_API_KEY=rk_live_...
@@ -50,6 +50,7 @@ ROARK_CHUNK_UPLOAD_URL_ENDPOINT=https://your-chunk-upload-endpoint.example.com/
 ```
 
 > Both URLs are **required** — the observer raises at construction if either is missing.
+> `ROARK_API_KEY` can also be passed as `api_key=` to `RoarkObserver`.
 
 ### 3. Wire the observer
 

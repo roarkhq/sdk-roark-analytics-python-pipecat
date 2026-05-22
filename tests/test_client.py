@@ -15,17 +15,13 @@ import pytest
 
 from pipecat_roark.client import API_KEY_HEADER, RoarkClient
 
-WEBHOOK_URL = "https://webhook.example/"
-CHUNK_URL_ENDPOINT = "https://chunks.example/"
+# Test webhook/chunk URLs are seeded by tests/conftest.py via monkeypatch.
+WEBHOOK_URL = "https://webhook.test/"
 
 
 def _client_with_mock(handler: Any) -> RoarkClient:
     """Build a RoarkClient whose internal AsyncClient uses the supplied mock."""
-    client = RoarkClient(
-        api_key="rk_test",
-        webhook_url=WEBHOOK_URL,
-        chunk_upload_url_endpoint=CHUNK_URL_ENDPOINT,
-    )
+    client = RoarkClient(api_key="rk_test")
     client._client = httpx.AsyncClient(  # type: ignore[attr-defined]
         transport=httpx.MockTransport(handler),
         headers={API_KEY_HEADER: "rk_test"},
@@ -119,18 +115,10 @@ async def test_upload_chunk_returns_true_on_2xx() -> None:
     assert seen["content_type"] == "audio/pcm"
 
 
-def test_endpoint_resolution_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Explicit kwarg beats env var; missing config raises ValueError."""
+def test_endpoint_resolution_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Endpoints are read from env; missing env vars raise ValueError."""
     monkeypatch.setenv("ROARK_WEBHOOK_URL", "https://env-webhook/")
     monkeypatch.setenv("ROARK_CHUNK_UPLOAD_URL_ENDPOINT", "https://env-chunks/")
-    c = RoarkClient(
-        api_key="k",
-        webhook_url="https://explicit-webhook/",
-        chunk_upload_url_endpoint="https://explicit-chunks/",
-    )
-    assert c._webhook_url == "https://explicit-webhook/"
-    assert c._chunk_upload_url_endpoint == "https://explicit-chunks/"
-
     c = RoarkClient(api_key="k")
     assert c._webhook_url == "https://env-webhook/"
     assert c._chunk_upload_url_endpoint == "https://env-chunks/"

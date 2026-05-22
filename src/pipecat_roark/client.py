@@ -28,41 +28,27 @@ class RoarkClient:
     values, never raised. The observer must never break the surrounding call.
     """
 
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        webhook_url: str | None = None,
-        chunk_upload_url_endpoint: str | None = None,
-    ) -> None:
+    def __init__(self, *, api_key: str) -> None:
         """Initialise the client.
 
         Args:
             api_key: Roark API key (e.g. ``rk_live_...``). Sent on every Roark
                 request as ``x-roark-api-key`` *and* ``Authorization: Bearer``
                 so both the webhook and the customer-api router accept it.
-            webhook_url: Roark webhook endpoint that receives ``call-started``
-                / ``call-ended`` POSTs. Falls back to ``ROARK_WEBHOOK_URL``.
-            chunk_upload_url_endpoint: Endpoint that mints presigned S3 PUT
-                URLs for audio chunks. Falls back to
-                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT``.
 
         Raises:
-            ValueError: If neither the kwarg nor the corresponding env var is
-                set for ``webhook_url`` or ``chunk_upload_url_endpoint``.
+            ValueError: If ``ROARK_WEBHOOK_URL`` or
+                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT`` is not set in the
+                environment.
         """
         self._api_key = api_key
-        webhook = webhook_url or os.environ.get("ROARK_WEBHOOK_URL")
+        webhook = os.environ.get("ROARK_WEBHOOK_URL")
         if not webhook:
-            raise ValueError("Set ROARK_WEBHOOK_URL env var or pass webhook_url=")
+            raise ValueError("Set ROARK_WEBHOOK_URL env var")
         self._webhook_url: str = webhook
-        chunk_endpoint = chunk_upload_url_endpoint or os.environ.get(
-            "ROARK_CHUNK_UPLOAD_URL_ENDPOINT"
-        )
+        chunk_endpoint = os.environ.get("ROARK_CHUNK_UPLOAD_URL_ENDPOINT")
         if not chunk_endpoint:
-            raise ValueError(
-                "Set ROARK_CHUNK_UPLOAD_URL_ENDPOINT env var or pass chunk_upload_url_endpoint="
-            )
+            raise ValueError("Set ROARK_CHUNK_UPLOAD_URL_ENDPOINT env var")
         self._chunk_upload_url_endpoint: str = chunk_endpoint
         self._client: httpx.AsyncClient | None = None
         self._s3_client: httpx.AsyncClient | None = None

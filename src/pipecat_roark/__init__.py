@@ -31,4 +31,4 @@ See https://docs.roark.ai/integrations/pipecat for the full setup guide.
 from .observer import RoarkObserver
 
 __all__ = ["RoarkObserver"]
-__version__ = "0.1.1"
+__version__ = "0.1.0"
