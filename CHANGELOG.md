@@ -6,6 +6,30 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-22
+
+Prep release for submission to the
+[Pipecat community-integrations](https://github.com/pipecat-ai/pipecat/blob/main/COMMUNITY_INTEGRATIONS.md)
+listing. Documentation and example polish only — no library behavior changes.
+
+### Changed
+
+- README: promoted the Pipecat-compatibility statement to a dedicated
+  `**Tested with Pipecat v0.0.108.**` callout at the top, matching the phrasing
+  expected by Pipecat's community-integration checklist.
+- `examples/bot.py`: fleshed out the placeholder STT / LLM / TTS block into a
+  runnable foundational voice assistant (Deepgram STT → OpenAI LLM →
+  Cartesia TTS) using the canonical Pipecat 0.0.108 runner pattern
+  (`LLMContext` + `LLMContextAggregatorPair`, `create_transport`,
+  `on_client_connected` / `on_client_disconnected` event handlers). Same file
+  still runs locally (`--transport webrtc` / `--transport daily`) and deploys
+  to Pipecat Cloud unchanged.
+- `.env.example`: added `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`,
+  `CARTESIA_API_KEY` for the runnable example.
+- `RoarkObserver`: expanded class docstring; converted `__init__` and
+  `aflush` to Google-style docstrings with explicit `Args:` blocks per
+  Pipecat's docstring conventions.
+
 ## [0.1.0] - 2026-05-21
 
 Initial public release. Drop-in `RoarkObserver` for Pipecat that ships call
@@ -40,5 +64,6 @@ lifecycle, transcripts, tool calls, and audio recordings to Roark.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
   `pipecat_call_id`, `audio_buffer_processor` are optional.
 
-[Unreleased]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/roarkhq/pipecat-roark/releases/tag/v0.1.0
