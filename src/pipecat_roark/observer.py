@@ -106,7 +106,23 @@ def _result_to_string(value: object) -> str:
 
 
 class RoarkObserver(BaseObserver):
-    """Capture Pipecat pipeline activity and ship it to Roark."""
+    """Capture Pipecat pipeline activity and ship it to Roark.
+
+    Subclass of ``pipecat.observers.base_observer.BaseObserver``. Drop into a
+    ``PipelineTask``'s ``observers=[...]`` list to record call lifecycle,
+    transcripts, tool calls, and a stereo audio recording with no other code
+    changes to the pipeline.
+
+    The observer is event-driven — it reacts to frames flowing through the
+    pipeline (``TranscriptionFrame``, ``TTSTextFrame``,
+    ``FunctionCallInProgressFrame`` / ``FunctionCallResultFrame``,
+    ``EndFrame`` / ``CancelFrame`` / ``StopFrame``) and to audio chunks emitted
+    by an attached ``AudioBufferProcessor``. See the module docstring for the
+    full per-frame lifecycle.
+
+    Failures are logged and swallowed — the observer never raises into the
+    pipeline.
+    """
 
     def __init__(
         self,
@@ -120,6 +136,36 @@ class RoarkObserver(BaseObserver):
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
     ) -> None:
+        """Construct a ``RoarkObserver`` for a single Pipecat call.
+
+        Args:
+            api_key: Roark API key. Sent as a bearer token to the Roark
+                webhook and chunk-upload endpoints.
+            agent_id: Customer-stable agent identifier. Roark lazy-registers
+                the agent the first time it sees a given ``agent_id``.
+            agent_name: Display name for the agent on the Roark dashboard.
+            agent_prompt: System prompt for the agent. Persisted as the
+                agent's prompt revision so prompt changes are tracked over
+                time.
+            roark_webhook_url: Override the ``ROARK_WEBHOOK_URL`` env var.
+                Required at construction time — either as a kwarg or via env;
+                the observer raises if neither is set.
+            roark_chunk_upload_url_endpoint: Override the
+                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT`` env var. Required at
+                construction time — either as a kwarg or via env; the
+                observer raises if neither is set.
+            audio_buffer_processor: Bring-your-own ``AudioBufferProcessor`` to
+                tune sample rate, channel count, or buffer size. If omitted,
+                the observer creates a default (stereo, ~256 KB chunks;
+                sample rate adopted from the pipeline's ``StartFrame``)
+                exposed as ``self.audio_processor`` for the caller to splice
+                into the pipeline after ``transport.output()``.
+            pipecat_call_id: Stable call identifier carried on Roark records
+                as ``pipecatCallId``. Generated internally if omitted. Pass
+                the same value to ``PipelineTask(conversation_id=...)`` when
+                OpenTelemetry tracing is enabled so each Roark call can be
+                looked up by ``conversation.id`` in your tracing backend.
+        """
         super().__init__()
 
         client_kwargs: dict[str, str] = {"api_key": api_key}
@@ -252,12 +298,20 @@ class RoarkObserver(BaseObserver):
             return
 
     async def aflush(self, *, reason: str = "client-disconnected") -> None:
-        """Idempotently flush the call.
+        """Idempotently flush the call's pending state and POST ``call-ended``.
 
-        Pipecat transports (notably SmallWebRTC) sometimes tear down without pushing
-        EndFrame/CancelFrame through the observer; call this from your
-        ``on_client_disconnected`` handler to guarantee ``call-ended`` is POSTed.
-        Safe to call multiple times.
+        Pipecat transports (notably ``SmallWebRTC``) sometimes tear down
+        without pushing ``EndFrame`` / ``CancelFrame`` through the observer.
+        Call this from your ``on_client_disconnected`` handler to guarantee
+        ``call-ended`` is POSTed to Roark.
+
+        Args:
+            reason: Value forwarded to Roark as ``callEndedReason`` on the
+                ``call-ended`` payload.
+
+        Note:
+            Safe to call multiple times — the regular ``EndFrame`` path
+            no-ops on the second call.
         """
         self._flush_assistant_turn()
         await self._flush_call_ended(reason=reason)
