@@ -10,7 +10,7 @@ The observer always creates a default ``AudioBufferProcessor`` (stereo,
 exposed as ``roark.audio_processor``. Splice it into your pipeline *after*
 ``transport.output()`` so the bot channel sees post-TTS audio. The processor
 mixes user and bot audio, inserts silence during gaps, and emits chunks via
-``on_audio_data`` which the observer ships to S3.
+``on_audio_data`` which the observer ships to Roark.
 """
 
 from __future__ import annotations
