@@ -7,7 +7,6 @@ never raised. The observer must never break the call.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import httpx
@@ -17,6 +16,12 @@ from ._types import CallEndedPayload, CallStartedPayload, ChunkUploadUrlResponse
 API_KEY_HEADER = "x-roark-api-key"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_CHUNK_TIMEOUT_SECONDS = 10.0
+
+# Roark service endpoints. These are part of the integration contract — callers
+# only ever supply an API key, never a URL. They follow the same
+# /v1/integrations/<provider> shape as Roark's other integrations (vapi, livekit).
+WEBHOOK_URL = "https://api.roark.ai/v1/integrations/pipecat"
+CHUNK_UPLOAD_URL_ENDPOINT = "https://api.roark.ai/v1/integrations/pipecat/chunk-upload-url"
 
 log = logging.getLogger("pipecat_roark.client")
 
@@ -35,21 +40,10 @@ class RoarkClient:
             api_key: Roark API key (e.g. ``rk_live_...``). Sent on every Roark
                 request as ``x-roark-api-key`` *and* ``Authorization: Bearer``
                 so both the webhook and the customer-api router accept it.
-
-        Raises:
-            ValueError: If ``ROARK_WEBHOOK_URL`` or
-                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT`` is not set in the
-                environment.
         """
         self._api_key = api_key
-        webhook = os.environ.get("ROARK_WEBHOOK_URL")
-        if not webhook:
-            raise ValueError("Set ROARK_WEBHOOK_URL env var")
-        self._webhook_url: str = webhook
-        chunk_endpoint = os.environ.get("ROARK_CHUNK_UPLOAD_URL_ENDPOINT")
-        if not chunk_endpoint:
-            raise ValueError("Set ROARK_CHUNK_UPLOAD_URL_ENDPOINT env var")
-        self._chunk_upload_url_endpoint: str = chunk_endpoint
+        self._webhook_url: str = WEBHOOK_URL
+        self._chunk_upload_url_endpoint: str = CHUNK_UPLOAD_URL_ENDPOINT
         self._client: httpx.AsyncClient | None = None
         self._s3_client: httpx.AsyncClient | None = None
 

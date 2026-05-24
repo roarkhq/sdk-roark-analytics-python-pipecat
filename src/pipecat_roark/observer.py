@@ -156,11 +156,6 @@ class RoarkObserver(BaseObserver):
                 the same value to ``PipelineTask(conversation_id=...)`` when
                 OpenTelemetry tracing is enabled so each Roark call can be
                 looked up by ``conversation.id`` in your tracing backend.
-
-        Raises:
-            ValueError: If ``ROARK_WEBHOOK_URL`` or
-                ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT`` is not set in the
-                environment.
         """
         super().__init__()
 

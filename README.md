@@ -41,16 +41,14 @@ pip install pipecat-roark
 
 ### 2. Configure
 
-Set three env vars:
+Set one env var:
 
 ```bash
 ROARK_API_KEY=rk_live_...
-ROARK_WEBHOOK_URL=https://your-webhook-url.example.com/
-ROARK_CHUNK_UPLOAD_URL_ENDPOINT=https://your-chunk-upload-endpoint.example.com/
 ```
 
-> Both URLs are **required** — the observer raises at construction if either is missing.
-> `ROARK_API_KEY` can also be passed as `api_key=` to `RoarkObserver`.
+> The Roark API key is all you configure — the observer knows its own service
+> endpoints. `ROARK_API_KEY` can also be passed as `api_key=` to `RoarkObserver`.
 
 ### 3. Wire the observer
 
@@ -96,7 +94,7 @@ to Roark:
 | **User turns** | Final `TranscriptionFrame`s (interim transcriptions ignored). |
 | **Assistant turns** | `TTSTextFrame` chunks aggregated between `BotStoppedSpeakingFrame` / `InterruptionFrame` boundaries. |
 | **Tool calls** | `FunctionCallInProgressFrame` + `FunctionCallResultFrame`, paired by `toolCallId`. |
-| **Audio** | Stereo PCM chunks emitted by `AudioBufferProcessor`, streamed via presigned upload URLs (`POST /v1/pipecat/chunk-upload-url`). |
+| **Audio** | Stereo PCM chunks emitted by `AudioBufferProcessor`, streamed via presigned upload URLs (`POST /v1/integrations/pipecat/chunk-upload-url`). |
 | **Pipeline end** | `EndFrame` / `CancelFrame` / `StopFrame` (or `aflush()`) flushes in-flight turns, drains uploads, and POSTs `call-ended`. Roark finalizes the recording on its side. |
 
 Transcripts and tool calls are forwarded in Pipecat's native shape — Roark
@@ -140,20 +138,18 @@ and the same file runs in both modes — see `examples/bot.py`.
 
 ```bash
 cp .env.example .env
-# fill in ROARK_API_KEY, ROARK_WEBHOOK_URL, ROARK_CHUNK_UPLOAD_URL_ENDPOINT
+# fill in ROARK_API_KEY
 uv sync --all-extras
 uv run python examples/bot.py --transport daily   # or: --transport webrtc
 ```
 
 ### Pipecat Cloud
 
-Set the same three vars as deployment secrets, then deploy:
+Set the same vars as deployment secrets, then deploy:
 
 ```bash
 pcc secrets set roark-secrets \
-    ROARK_API_KEY=rk_live_... \
-    ROARK_WEBHOOK_URL=https://your-webhook-url.example.com/ \
-    ROARK_CHUNK_UPLOAD_URL_ENDPOINT=https://your-chunk-upload-endpoint.example.com/
+    ROARK_API_KEY=rk_live_...
 
 pcc deploy
 pcc agent start <agent-name>
@@ -180,7 +176,7 @@ Two example files ship with the package:
 ```bash
 cp .env.example .env
 # fill in:
-#   ROARK_API_KEY, ROARK_WEBHOOK_URL, ROARK_CHUNK_UPLOAD_URL_ENDPOINT
+#   ROARK_API_KEY
 #   DEEPGRAM_API_KEY, OPENAI_API_KEY, CARTESIA_API_KEY
 
 uv sync --all-extras

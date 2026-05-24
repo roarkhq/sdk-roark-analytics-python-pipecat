@@ -6,6 +6,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** Roark service endpoints are now built into the client. The
+  `ROARK_WEBHOOK_URL` and `ROARK_CHUNK_UPLOAD_URL_ENDPOINT` env vars are no
+  longer read or required — `ROARK_API_KEY` (or `api_key=`) is the only Roark
+  configuration. Remove those two vars from your environment / deployment
+  secrets; they are now ignored.
+
 ## [0.1.0] - 2026-05-22
 
 Initial public release. Drop-in `RoarkObserver` for Pipecat that ships call

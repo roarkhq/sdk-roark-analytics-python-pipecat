@@ -2,8 +2,6 @@
 
 Configuration via env (see ``.env.example``):
 - ``ROARK_API_KEY``
-- ``ROARK_WEBHOOK_URL``
-- ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT``
 
 The observer always creates a default ``AudioBufferProcessor`` (stereo,
 ~256 KB chunks; sample rate adopted from the pipeline's ``StartFrame``)

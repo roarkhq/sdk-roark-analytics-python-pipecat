@@ -21,8 +21,6 @@ stereo audio recording. The same file runs in two invocation modes:
 Env vars (see ``.env.example``):
     Roark:
         - ``ROARK_API_KEY``
-        - ``ROARK_WEBHOOK_URL``
-        - ``ROARK_CHUNK_UPLOAD_URL_ENDPOINT``
     Services:
         - ``DEEPGRAM_API_KEY``
         - ``OPENAI_API_KEY``
@@ -32,8 +30,6 @@ For Pipecat Cloud, set them as deployment secrets instead of a ``.env`` file::
 
     pcc secrets set roark-secrets \\
         ROARK_API_KEY=rk_live_... \\
-        ROARK_WEBHOOK_URL=... \\
-        ROARK_CHUNK_UPLOAD_URL_ENDPOINT=... \\
         DEEPGRAM_API_KEY=... \\
         OPENAI_API_KEY=... \\
         CARTESIA_API_KEY=...

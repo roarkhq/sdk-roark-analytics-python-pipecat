@@ -13,10 +13,12 @@ from typing import Any
 import httpx
 import pytest
 
-from pipecat_roark.client import API_KEY_HEADER, RoarkClient
-
-# Test webhook/chunk URLs are seeded by tests/conftest.py via monkeypatch.
-WEBHOOK_URL = "https://webhook.test/"
+from pipecat_roark.client import (
+    API_KEY_HEADER,
+    CHUNK_UPLOAD_URL_ENDPOINT,
+    WEBHOOK_URL,
+    RoarkClient,
+)
 
 
 def _client_with_mock(handler: Any) -> RoarkClient:
@@ -115,19 +117,8 @@ async def test_upload_chunk_returns_true_on_2xx() -> None:
     assert seen["content_type"] == "audio/pcm"
 
 
-def test_endpoint_resolution_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Endpoints are read from env; missing env vars raise ValueError."""
-    monkeypatch.setenv("ROARK_WEBHOOK_URL", "https://env-webhook/")
-    monkeypatch.setenv("ROARK_CHUNK_UPLOAD_URL_ENDPOINT", "https://env-chunks/")
+def test_endpoints_are_built_in() -> None:
+    """Endpoints are baked into the client; callers only supply an API key."""
     c = RoarkClient(api_key="k")
-    assert c._webhook_url == "https://env-webhook/"
-    assert c._chunk_upload_url_endpoint == "https://env-chunks/"
-
-    monkeypatch.delenv("ROARK_WEBHOOK_URL")
-    with pytest.raises(ValueError, match="ROARK_WEBHOOK_URL"):
-        RoarkClient(api_key="k")
-
-    monkeypatch.setenv("ROARK_WEBHOOK_URL", "https://env-webhook/")
-    monkeypatch.delenv("ROARK_CHUNK_UPLOAD_URL_ENDPOINT")
-    with pytest.raises(ValueError, match="ROARK_CHUNK_UPLOAD_URL_ENDPOINT"):
-        RoarkClient(api_key="k")
+    assert c._webhook_url == WEBHOOK_URL
+    assert c._chunk_upload_url_endpoint == CHUNK_UPLOAD_URL_ENDPOINT
