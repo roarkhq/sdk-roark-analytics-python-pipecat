@@ -6,6 +6,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-25
+
+### Added
+
+- Turns are now anchored to speech onset: each turn is timestamped at its
+  speech-onset VAD frame (`UserStartedSpeakingFrame` /
+  `BotStartedSpeakingFrame`) instead of the STT-finalize / TTS-text edge.
+- `audioOffsetMs` on each turn, measured from the recording's first audio
+  frame (WAV sample 0), so dashboards place speaker markers on the
+  recording's own sample timeline rather than wall clock. The offset anchor
+  is deferred to the first observed audio frame rather than
+  `start_recording()`, avoiding the dead-time inflation that made the first
+  seconds of merged audio appear missing.
+
 ### Changed
 
 - **BREAKING:** Roark service endpoints are now built into the client. The
@@ -60,5 +74,6 @@ listing.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
   `pipecat_call_id`, `audio_buffer_processor` are optional.
 
-[Unreleased]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/roarkhq/pipecat-roark/releases/tag/v0.1.0
