@@ -17,13 +17,17 @@ import pytest
 pytest.importorskip("pipecat", reason="pipecat-ai not installed in this env")
 
 from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EndFrame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
+    InputAudioRawFrame,
     InterruptionFrame,
+    OutputAudioRawFrame,
     TranscriptionFrame,
     TTSTextFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.observers.base_observer import FramePushed  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
@@ -35,6 +39,14 @@ def _user_frame(text: str, *, user_id: str = "user", timestamp: str = "t") -> Tr
     frame = TranscriptionFrame(text=text, user_id=user_id, timestamp=timestamp)
     frame.finalized = True  # type: ignore[attr-defined]
     return frame
+
+
+def _audio_in() -> InputAudioRawFrame:
+    return InputAudioRawFrame(audio=b"\x00\x00" * 8, sample_rate=24000, num_channels=1)
+
+
+def _audio_out() -> OutputAudioRawFrame:
+    return OutputAudioRawFrame(audio=b"\x00\x00" * 8, sample_rate=24000, num_channels=1)
 
 
 def _push(frame: Any) -> FramePushed:
@@ -180,6 +192,104 @@ async def test_user_and_assistant_turns_captured_from_raw_frames() -> None:
     assert transcript[1]["content"] == "hi there"
     # User spoke first, so agentSpokeFirst is False.
     assert ended["agentSpokeFirst"] is False
+
+
+@pytest.mark.asyncio
+async def test_user_turn_anchored_to_speech_onset_with_audio_offset() -> None:
+    """A preceding UserStartedSpeakingFrame should drive the turn's timestamp
+    (speech onset), overriding the STT-finalize frame timestamp, and the turn
+    should carry an audio-relative offset measured from start of recording.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    # First audio frame anchors the offset clock (WAV sample 0).
+    await obs.on_push_frame(_push(_audio_in()))
+    await obs.on_push_frame(_push(UserStartedSpeakingFrame()))
+    await obs.on_push_frame(
+        _push(_user_frame("hello", timestamp="2026-05-18T12:00:00+00:00"))
+    )
+    await obs.on_push_frame(_push(EndFrame()))
+
+    user_turn = fake.ended[0]["transcript"][0]
+    # VAD onset wins over the STT frame's own timestamp.
+    assert user_turn["timestamp"] != "2026-05-18T12:00:00+00:00"
+    assert "audioOffsetMs" in user_turn
+    assert isinstance(user_turn["audioOffsetMs"], int)
+    assert user_turn["audioOffsetMs"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_assistant_turn_anchored_to_bot_started_speaking() -> None:
+    """BotStartedSpeakingFrame (audio onset) should anchor the assistant turn
+    and produce an audioOffsetMs, even though TTSTextFrames arrive separately.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    # First audio frame anchors the offset clock (WAV sample 0).
+    await obs.on_push_frame(_push(_audio_out()))
+    await obs.on_push_frame(_push(BotStartedSpeakingFrame()))
+    await obs.on_push_frame(_push(TTSTextFrame(text="hi there", aggregated_by="sentence")))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assistant_turn = fake.ended[0]["transcript"][0]
+    assert assistant_turn["role"] == "assistant"
+    assert assistant_turn["content"] == "hi there"
+    assert "audioOffsetMs" in assistant_turn
+    assert assistant_turn["audioOffsetMs"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_audio_offset_omitted_when_recording_not_started() -> None:
+    """Without a recording anchor (on_pipeline_started never ran), turns must
+    omit audioOffsetMs rather than ship a bogus 0.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    # No on_pipeline_started → no recording anchor.
+    await obs.on_push_frame(_push(_user_frame("hello", timestamp="t1")))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    user_turn = fake.ended[0]["transcript"][0]
+    assert "audioOffsetMs" not in user_turn
+    # Falls back to the STT frame's own timestamp when no VAD onset is seen.
+    assert user_turn["timestamp"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_offset_anchor_deferred_to_first_audio_frame() -> None:
+    """Regression: WAV sample 0 is the first audio frame the processor records,
+    not start_recording(). Arming the recording must NOT anchor the offset clock;
+    only the first observed audio frame may. Anchoring at start_recording()
+    inflated every offset by the dead time before audio, so the first seconds of
+    the merged recording appeared to be missing.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    # Recording is armed, but the offset clock is not anchored yet — no audio
+    # frame has been recorded, so there is no WAV sample 0 to anchor to.
+    assert obs._recording_active is True  # type: ignore[attr-defined]
+    assert obs._recording_anchor_monotonic is None  # type: ignore[attr-defined]
+
+    # The first audio frame establishes the anchor.
+    await obs.on_push_frame(_push(_audio_out()))
+    anchor = obs._recording_anchor_monotonic  # type: ignore[attr-defined]
+    assert anchor is not None
+
+    # Later audio frames must not move the anchor.
+    await obs.on_push_frame(_push(_audio_in()))
+    assert obs._recording_anchor_monotonic == anchor  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

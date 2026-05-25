@@ -7,7 +7,12 @@ captures everything it needs by watching raw frames flow through the pipeline.
   pipeline wiring required. User turns come from ``TranscriptionFrame`` (final
   only); assistant turns are aggregated from ``TTSTextFrame`` chunks between
   utterance boundaries (``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` /
-  ``EndFrame`` / ``CancelFrame``).
+  ``EndFrame`` / ``CancelFrame``). Each turn is timestamped at its *speech
+  onset* — ``UserStartedSpeakingFrame`` for the user, ``BotStartedSpeakingFrame``
+  for the assistant — and also carries an ``audioOffsetMs`` measured from the
+  start of the recording (WAV sample 0 == the first audio *frame* the pipeline
+  carries, not ``start_recording()``), so dashboards can place speaker markers
+  on the recording's own sample timeline instead of wall clock.
 * **Tool calls** come from ``FunctionCallInProgressFrame`` /
   ``FunctionCallResultFrame``. Each is shipped as a discrete ``tool_call`` /
   ``tool_result`` record discriminated by ``kind``; Roark pairs them by
@@ -177,6 +182,26 @@ class RoarkObserver(BaseObserver):
         # bot stops speaking, gets interrupted, or the pipeline ends.
         self._assistant_text_parts: list[str] = []
         self._assistant_start_iso: str | None = None
+        self._assistant_start_monotonic: float | None = None
+
+        # Audio-relative timing. Marker placement must use the recording's own
+        # sample timeline, not wall clock, or markers drift from the merged
+        # audio. WAV sample 0 is the first audio *frame* AudioBufferProcessor
+        # records — NOT the ``start_recording()`` call: the processor only
+        # appends bytes when ``Input/OutputAudioRawFrame``s arrive and never
+        # back-fills silence for the dead time before the first frame (media
+        # negotiation, TTS warmup, leading silence). So we arm recording in
+        # ``on_pipeline_started`` but defer the offset anchor until the first
+        # audio frame is observed (see ``on_push_frame``). Turns are anchored to
+        # speech-onset VAD frames (``UserStartedSpeakingFrame`` /
+        # ``BotStartedSpeakingFrame``) rather than STT-finalize / TTS-text
+        # frames, which sit at the wrong edge of the turn.
+        self._recording_active = False
+        self._recording_anchor_monotonic: float | None = None
+        self._user_started_iso: str | None = None
+        self._user_started_monotonic: float | None = None
+        self._bot_started_iso: str | None = None
+        self._bot_started_monotonic: float | None = None
 
         self._chunk_index = 0
         self._inflight_uploads: set[asyncio.Task[None]] = set()
@@ -213,32 +238,66 @@ class RoarkObserver(BaseObserver):
         """
         if self._started_posted:
             return
-        await self._post_call_started()
+        # Start recording BEFORE the call-started webhook round-trips. The POST
+        # is a network call; if we awaited it first, every audio frame that
+        # flowed through the pipeline during that latency (the bot's greeting,
+        # the user's first words) would be dropped, since AudioBufferProcessor
+        # discards frames until start_recording() flips _recording on. That
+        # showed up as the merged audio missing its first couple seconds.
         try:
             await self.audio_processor.start_recording()
+            # Recording is armed, but DON'T anchor the offset clock here. WAV
+            # sample 0 is the first audio frame the processor actually records,
+            # which lands later than this call (media negotiation, TTS warmup,
+            # leading silence). Anchoring here was the original bug — it inflated
+            # every audioOffsetMs by that dead time, so the first seconds of the
+            # merged audio appeared to be missing. The anchor is set on the first
+            # observed audio frame instead; see ``on_push_frame``.
+            self._recording_active = True
         except Exception as err:  # pragma: no cover — defensive
             log.warning("AudioBufferProcessor.start_recording failed: %r", err)
+        await self._post_call_started()
 
     # ------------------------------------------------------------------ frames
 
     async def on_push_frame(self, data: FramePushed) -> None:  # type: ignore[override]
         from pipecat.frames.frames import (
+            BotStartedSpeakingFrame,
             BotStoppedSpeakingFrame,
             CancelFrame,
             EndFrame,
             FunctionCallInProgressFrame,
             FunctionCallResultFrame,
+            InputAudioRawFrame,
             InterruptionFrame,
+            OutputAudioRawFrame,
             StopFrame,
             TranscriptionFrame,
             TTSTextFrame,
+            UserStartedSpeakingFrame,
         )
 
         frame: Frame = data.frame
 
+        # Anchor the audio-offset clock to the first audio frame the pipeline
+        # carries — that's WAV sample 0 in the merged recording. AudioBuffer-
+        # Processor starts its buffer at this frame, not at start_recording(),
+        # so anchoring here keeps every audioOffsetMs aligned with the audio's
+        # own sample timeline. The ``is None`` guard makes this a one-shot: once
+        # set, the very common audio-frame path short-circuits immediately and
+        # the anchor never moves. ``OutputAudioRawFrame`` also covers TTS audio
+        # (``TTSAudioRawFrame`` subclasses it).
+        if self._recording_active and self._recording_anchor_monotonic is None:
+            if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
+                self._recording_anchor_monotonic = self._now_monotonic()
+            # Audio raw frames are not otherwise handled; fall through to the
+            # type filter below, which drops them.
+
         handled_types = (
             TranscriptionFrame,
             TTSTextFrame,
+            UserStartedSpeakingFrame,
+            BotStartedSpeakingFrame,
             BotStoppedSpeakingFrame,
             InterruptionFrame,
             FunctionCallInProgressFrame,
@@ -254,6 +313,18 @@ class RoarkObserver(BaseObserver):
             if fid in self._seen_frame_ids:
                 return
             self._seen_frame_ids.add(fid)
+
+        # Speech-onset markers — capture the start edge of each turn so the
+        # transcript timestamp lands where the audio actually begins.
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._user_started_iso = _utc_now_iso()
+            self._user_started_monotonic = self._now_monotonic()
+            return
+
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_started_iso = _utc_now_iso()
+            self._bot_started_monotonic = self._now_monotonic()
+            return
 
         if isinstance(frame, TranscriptionFrame):
             # STT may emit interim frames too; only commit on finalize.
@@ -321,6 +392,31 @@ class RoarkObserver(BaseObserver):
 
         log.info("call-started: pipecatCallId=%s agentId=%s", self._pipecat_call_id, self._agent_id)
         await self._client.post_call_started(payload)
+
+    # ------------------------------------------------------------------ timing
+
+    @staticmethod
+    def _now_monotonic() -> float | None:
+        """Event-loop monotonic clock, or ``None`` if called off-loop."""
+        try:
+            return asyncio.get_running_loop().time()
+        except RuntimeError:  # pragma: no cover — defensive
+            return None
+
+    def _offset_ms_from(self, monotonic: float | None) -> int | None:
+        """Milliseconds from the recording anchor to ``monotonic``.
+
+        Returns ``None`` if recording hasn't started or the time is unknown,
+        so callers omit ``audioOffsetMs`` rather than ship a bogus 0.
+        """
+        anchor = self._recording_anchor_monotonic
+        if anchor is None or monotonic is None:
+            return None
+        return max(0, round((monotonic - anchor) * 1000))
+
+    def _audio_offset_ms(self) -> int | None:
+        """Audio offset (ms) at the current instant."""
+        return self._offset_ms_from(self._now_monotonic())
 
     # ------------------------------------------------------------------ audio
 
@@ -414,15 +510,35 @@ class RoarkObserver(BaseObserver):
             text = (getattr(frame, "text", "") or "").strip()
             if not text:
                 return
-            timestamp = getattr(frame, "timestamp", None)
-            if not isinstance(timestamp, str) or not timestamp:
-                timestamp = _utc_now_iso()
+
+            # Anchor the turn to where the user *started* speaking, not the
+            # STT-finalize moment (end of utterance + recognition latency) —
+            # otherwise the marker lands well after the audio. Consume and
+            # clear the pending speech-onset edge; fall back to the STT frame's
+            # own timestamp, then wall clock, if VAD frames aren't in the pipeline.
+            started_iso = self._user_started_iso
+            started_monotonic = self._user_started_monotonic
+            self._user_started_iso = None
+            self._user_started_monotonic = None
+
+            timestamp = started_iso
+            if not timestamp:
+                frame_ts = getattr(frame, "timestamp", None)
+                timestamp = frame_ts if isinstance(frame_ts, str) and frame_ts else _utc_now_iso()
+
+            offset_ms = (
+                self._offset_ms_from(started_monotonic)
+                if started_monotonic is not None
+                else self._audio_offset_ms()
+            )
 
             entry: TranscriptMessage = {
                 "role": "user",
                 "content": text,
                 "timestamp": timestamp,
             }
+            if offset_ms is not None:
+                entry["audioOffsetMs"] = offset_ms
             user_id = getattr(frame, "user_id", None)
             if isinstance(user_id, str) and user_id:
                 entry["userId"] = user_id
@@ -449,6 +565,7 @@ class RoarkObserver(BaseObserver):
                 return
             if not self._assistant_text_parts:
                 self._assistant_start_iso = _utc_now_iso()
+                self._assistant_start_monotonic = self._now_monotonic()
             self._assistant_text_parts.append(text)
         except Exception as err:  # pragma: no cover — defensive
             log.warning("failed to accumulate assistant text: %r", err)
@@ -458,9 +575,22 @@ class RoarkObserver(BaseObserver):
             return
         try:
             content = _join_tts_chunks(self._assistant_text_parts).strip()
-            timestamp = self._assistant_start_iso or _utc_now_iso()
+            # Prefer the bot-audio onset (BotStartedSpeakingFrame) — that's
+            # where the speech actually lands in the recording. The first
+            # TTSTextFrame is text generation, which precedes audio playout;
+            # use it only as a fallback when bot-speaking frames are absent.
+            timestamp = self._bot_started_iso or self._assistant_start_iso or _utc_now_iso()
+            start_monotonic = (
+                self._bot_started_monotonic
+                if self._bot_started_monotonic is not None
+                else self._assistant_start_monotonic
+            )
+            offset_ms = self._offset_ms_from(start_monotonic)
             self._assistant_text_parts = []
             self._assistant_start_iso = None
+            self._assistant_start_monotonic = None
+            self._bot_started_iso = None
+            self._bot_started_monotonic = None
             if not content:
                 return
             entry: TranscriptMessage = {
@@ -468,6 +598,8 @@ class RoarkObserver(BaseObserver):
                 "content": content,
                 "timestamp": timestamp,
             }
+            if offset_ms is not None:
+                entry["audioOffsetMs"] = offset_ms
             if self._first_speaker is None:
                 self._first_speaker = "assistant"
             self._transcript.append(entry)
@@ -481,6 +613,9 @@ class RoarkObserver(BaseObserver):
             # Reset so a parser glitch doesn't poison the next turn.
             self._assistant_text_parts = []
             self._assistant_start_iso = None
+            self._assistant_start_monotonic = None
+            self._bot_started_iso = None
+            self._bot_started_monotonic = None
 
     # ------------------------------------------------------------------ tool calls
 
@@ -498,6 +633,9 @@ class RoarkObserver(BaseObserver):
                     "timestamp": _utc_now_iso(),
                 },
             )
+            offset_ms = self._audio_offset_ms()
+            if offset_ms is not None:
+                entry["audioOffsetMs"] = offset_ms
             self._tool_calls.append(entry)
             log.info(
                 "tool_call captured: name=%s toolCallId=%s",
@@ -518,6 +656,9 @@ class RoarkObserver(BaseObserver):
                     "timestamp": _utc_now_iso(),
                 },
             )
+            offset_ms = self._audio_offset_ms()
+            if offset_ms is not None:
+                entry["audioOffsetMs"] = offset_ms
             self._tool_calls.append(entry)
             log.info(
                 "tool_result captured: toolCallId=%s content_chars=%d",

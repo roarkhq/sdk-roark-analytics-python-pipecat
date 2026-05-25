@@ -17,7 +17,8 @@ class TranscriptMessage(TypedDict, total=False):
 
     role: Literal["assistant", "user", "system"]
     content: str
-    timestamp: str  # ISO 8601 UTC
+    timestamp: str  # ISO 8601 UTC — anchored to speech onset (VAD), not STT/TTS emit
+    audioOffsetMs: int  # ms from start of recording (WAV sample 0); place markers here
     userId: str
     language: str  # BCP-47
 
@@ -30,6 +31,7 @@ class ToolCallMessage(TypedDict, total=False):
     name: str
     arguments: str  # JSON string — Roark side `JSON.parse`s it
     timestamp: str  # ISO 8601 UTC
+    audioOffsetMs: int  # ms from start of recording (WAV sample 0)
 
 
 class ToolResultMessage(TypedDict, total=False):
@@ -39,6 +41,7 @@ class ToolResultMessage(TypedDict, total=False):
     toolCallId: str
     content: str  # stringified result (json.dumps for objects, str() for scalars)
     timestamp: str  # ISO 8601 UTC
+    audioOffsetMs: int  # ms from start of recording (WAV sample 0)
 
 
 class CallStartedPayload(TypedDict, total=False):
