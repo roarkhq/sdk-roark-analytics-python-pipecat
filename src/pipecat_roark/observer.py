@@ -27,9 +27,11 @@ captures everything it needs by watching raw frames flow through the pipeline.
 
 Lifecycle:
 
-1. ``on_pipeline_started`` (fired by Pipecat once after ``StartFrame`` has
-   propagated through every processor) → POST ``call-started``;
-   ``AudioBufferProcessor.start_recording()`` is invoked if recording is enabled.
+1. The default ``AudioBufferProcessor`` arms recording *inline* on the
+   ``StartFrame`` (see ``_make_self_recording_audio_buffer_processor``), so a
+   bot that speaks first is captured from sample 0; ``on_pipeline_started``
+   then POSTs ``call-started``. A bring-your-own processor is armed from
+   ``on_pipeline_started`` instead (best-effort).
 2. During the call:
      * ``TranscriptionFrame`` (final) → user turn buffered.
      * ``TTSTextFrame`` → aggregated into a pending assistant turn.
@@ -108,6 +110,46 @@ def _result_to_string(value: object) -> str:
         except (TypeError, ValueError):
             return str(value)
     return str(value)
+
+
+def _make_self_recording_audio_buffer_processor(
+    *, num_channels: int, buffer_size: int
+) -> AudioBufferProcessor:
+    """Build an ``AudioBufferProcessor`` that arms recording *inline* on ``StartFrame``.
+
+    ``AudioBufferProcessor`` silently drops every audio frame until
+    ``start_recording()`` flips ``_recording`` on. The obvious trigger — an
+    observer's ``on_pipeline_started`` callback — is a trap: observer callbacks
+    run on a *lagging* per-observer queue (see Pipecat's ``TaskObserver``), so a
+    bot that speaks first can reach this inline processor before the queued
+    ``start_recording()`` is drained, and its greeting audio is discarded. That
+    is the "first couple of seconds missing" bug.
+
+    Arming from the processor's own ``StartFrame`` is deterministic: Pipecat
+    pushes queued frames (the greeting included) only *after* the ``StartFrame``
+    has reached the pipeline sink — i.e. after it has already passed through
+    this processor — so recording is guaranteed armed before any audio arrives.
+    This also works on every Pipecat version, unlike ``on_pipeline_started``,
+    which older Pipecat releases don't deliver to observers at all (e.g. 0.0.101
+    has no such hook), silently leaving recording disarmed.
+    """
+    from pipecat.frames.frames import StartFrame
+    from pipecat.processors.audio.audio_buffer_processor import (
+        AudioBufferProcessor as _AudioBufferProcessor,
+    )
+
+    class _SelfRecordingAudioBufferProcessor(_AudioBufferProcessor):
+        async def process_frame(self, frame, direction):  # type: ignore[no-untyped-def]
+            await super().process_frame(frame, direction)
+            # Arm once, the instant the StartFrame is handled inline — before any
+            # greeting audio frame can reach us. ``start_recording`` only resets
+            # the (still-empty) buffers here, so it costs nothing.
+            if isinstance(frame, StartFrame) and not self._recording:
+                await self.start_recording()
+
+    return _SelfRecordingAudioBufferProcessor(
+        num_channels=num_channels, buffer_size=buffer_size
+    )
 
 
 class RoarkObserver(BaseObserver):
@@ -190,12 +232,13 @@ class RoarkObserver(BaseObserver):
         # records — NOT the ``start_recording()`` call: the processor only
         # appends bytes when ``Input/OutputAudioRawFrame``s arrive and never
         # back-fills silence for the dead time before the first frame (media
-        # negotiation, TTS warmup, leading silence). So we arm recording in
-        # ``on_pipeline_started`` but defer the offset anchor until the first
-        # audio frame is observed (see ``on_push_frame``). Turns are anchored to
-        # speech-onset VAD frames (``UserStartedSpeakingFrame`` /
-        # ``BotStartedSpeakingFrame``) rather than STT-finalize / TTS-text
-        # frames, which sit at the wrong edge of the turn.
+        # negotiation, TTS warmup, leading silence). So recording is armed
+        # inline on the StartFrame (see
+        # ``_make_self_recording_audio_buffer_processor``) and the offset anchor
+        # is deferred until the first audio frame is observed (see
+        # ``on_push_frame``). Turns are anchored to speech-onset VAD frames
+        # (``UserStartedSpeakingFrame`` / ``BotStartedSpeakingFrame``) rather
+        # than STT-finalize / TTS-text frames, which sit at the wrong edge.
         self._recording_active = False
         self._recording_anchor_monotonic: float | None = None
         self._user_started_iso: str | None = None
@@ -206,18 +249,20 @@ class RoarkObserver(BaseObserver):
         self._chunk_index = 0
         self._inflight_uploads: set[asyncio.Task[None]] = set()
 
+        # The processor we own arms recording inline on the StartFrame, the only
+        # way to reliably capture a bot that speaks first (see
+        # ``_make_self_recording_audio_buffer_processor``). A bring-your-own
+        # processor can't be hooked that way, so it is armed from
+        # ``on_pipeline_started`` instead (best-effort). Track which case we're in.
+        self._auto_arm_recording = audio_buffer_processor is None
         if audio_buffer_processor is None:
-            from pipecat.processors.audio.audio_buffer_processor import (
-                AudioBufferProcessor as _AudioBufferProcessor,
-            )
-
             # Stereo (L=user, R=bot), ~256 KB chunks. Sample rate is left
             # unspecified so AudioBufferProcessor adopts the pipeline's
             # negotiated ``audio_out_sample_rate`` from the StartFrame — this
             # varies by provider (Twilio/Telnyx are 8 kHz, Daily/LiveKit are
             # typically 16/24/48 kHz). Hardcoding a rate would force resampling
             # at best and silent corruption at worst.
-            audio_buffer_processor = _AudioBufferProcessor(
+            audio_buffer_processor = _make_self_recording_audio_buffer_processor(
                 num_channels=2,
                 buffer_size=256 * 1024,
             )
@@ -235,27 +280,31 @@ class RoarkObserver(BaseObserver):
     async def on_pipeline_started(self) -> None:  # type: ignore[override]
         """Pipecat fires this once after ``StartFrame`` has propagated through
         every processor — the canonical "call begins" hook.
+
+        Note:
+            This callback runs on a *lagging* per-observer queue, so it is NOT
+            used to arm recording for the processor we own — that happens inline
+            on the StartFrame (see
+            ``_make_self_recording_audio_buffer_processor``), otherwise a bot
+            that speaks first loses its greeting. A bring-your-own processor is
+            armed here as a best-effort fallback.
         """
         if self._started_posted:
             return
-        # Start recording BEFORE the call-started webhook round-trips. The POST
-        # is a network call; if we awaited it first, every audio frame that
-        # flowed through the pipeline during that latency (the bot's greeting,
-        # the user's first words) would be dropped, since AudioBufferProcessor
-        # discards frames until start_recording() flips _recording on. That
-        # showed up as the merged audio missing its first couple seconds.
-        try:
-            await self.audio_processor.start_recording()
-            # Recording is armed, but DON'T anchor the offset clock here. WAV
-            # sample 0 is the first audio frame the processor actually records,
-            # which lands later than this call (media negotiation, TTS warmup,
-            # leading silence). Anchoring here was the original bug — it inflated
-            # every audioOffsetMs by that dead time, so the first seconds of the
-            # merged audio appeared to be missing. The anchor is set on the first
-            # observed audio frame instead; see ``on_push_frame``.
-            self._recording_active = True
-        except Exception as err:  # pragma: no cover — defensive
-            log.warning("AudioBufferProcessor.start_recording failed: %r", err)
+        # Arm a bring-your-own processor here (best-effort). The processor we
+        # create arms itself inline on the StartFrame instead — calling
+        # start_recording() again would reset its buffers and wipe any greeting
+        # audio already captured, so we must not do it for the default.
+        if not self._auto_arm_recording:
+            try:
+                await self.audio_processor.start_recording()
+            except Exception as err:  # pragma: no cover — defensive
+                log.warning("AudioBufferProcessor.start_recording failed: %r", err)
+        # Enable the observer's audio-offset tracking. The anchor itself is set
+        # on the first observed audio frame (see ``on_push_frame``), not here —
+        # WAV sample 0 is that first frame, which lands after media negotiation,
+        # TTS warmup, and leading silence.
+        self._recording_active = True
         await self._post_call_started()
 
     # ------------------------------------------------------------------ frames

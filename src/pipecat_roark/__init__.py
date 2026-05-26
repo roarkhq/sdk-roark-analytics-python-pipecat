@@ -28,7 +28,16 @@ Example::
 See https://docs.roark.ai/integrations/pipecat for the full setup guide.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .observer import RoarkObserver
 
+try:
+    # Single source of truth: the installed package metadata (driven by
+    # pyproject.toml's ``version``). Avoids the hand-maintained string drifting
+    # out of sync with the released version.
+    __version__ = version("pipecat-roark")
+except PackageNotFoundError:  # pragma: no cover — running from a source tree
+    __version__ = "0.0.0+unknown"
+
 __all__ = ["RoarkObserver"]
-__version__ = "0.1.0"

@@ -25,6 +25,7 @@ from pipecat.frames.frames import (  # noqa: E402
     InputAudioRawFrame,
     InterruptionFrame,
     OutputAudioRawFrame,
+    StartFrame,
     TranscriptionFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
@@ -465,7 +466,9 @@ async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
 
 
 @pytest.mark.asyncio
-async def test_default_audio_processor_is_created_when_none_passed() -> None:
+async def test_default_audio_processor_is_created_when_none_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
@@ -481,15 +484,34 @@ async def test_default_audio_processor_is_created_when_none_passed() -> None:
     assert abp._init_sample_rate is None  # noqa: SLF001 — constructor input
     assert abp.num_channels == 2
 
-    # on_pipeline_started must invoke start_recording on the auto-created processor.
+    # The auto-created processor arms recording INLINE on the StartFrame — not
+    # from on_pipeline_started, whose lagging observer-queue delivery would let a
+    # bot that speaks first lose its greeting. on_pipeline_started must therefore
+    # NOT call start_recording on the default processor (doing so would reset its
+    # buffers and wipe already-captured audio).
     calls: list[int] = []
+    real_start = abp.start_recording
 
     async def _track() -> None:
         calls.append(1)
+        await real_start()
 
     abp.start_recording = _track  # type: ignore[method-assign]
     await obs.on_pipeline_started()
+    assert calls == [], "default processor must not be armed from on_pipeline_started"
+
+    # Processing the StartFrame inline arms recording from sample 0. Stub the
+    # heavy FrameProcessor.process_frame machinery (clock / task manager, set up
+    # only inside a live pipeline) — we only need to exercise our StartFrame
+    # override, which runs after super().process_frame().
+    async def _noop_process_frame(self: Any, frame: Any, direction: Any) -> None:
+        return None
+
+    monkeypatch.setattr(AudioBufferProcessor, "process_frame", _noop_process_frame)
+
+    await abp.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
     assert calls == [1]
+    assert abp._recording is True  # noqa: SLF001 — internal recording flag
 
 
 @pytest.mark.asyncio

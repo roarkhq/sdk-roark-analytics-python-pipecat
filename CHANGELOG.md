@@ -6,6 +6,27 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-26
+
+### Fixed
+
+- **The bot's opening greeting is no longer lost from the recording.** The
+  default `AudioBufferProcessor` now arms recording *inline* on the pipeline's
+  `StartFrame` instead of from the observer's `on_pipeline_started` callback.
+  Observer callbacks are delivered on a lagging per-observer queue, so a bot
+  that speaks first could push its greeting audio through the inline processor
+  before the queued `start_recording()` ran — and `AudioBufferProcessor`
+  silently drops every frame until recording is armed. Arming on the
+  `StartFrame` is deterministic (Pipecat pushes queued frames, the greeting
+  included, only after the `StartFrame` has traversed the pipeline) and works on
+  every supported Pipecat version. The 0.1.1 change mis-attributed this to
+  webhook latency; the real cause was the observer dispatch queue. A
+  bring-your-own `AudioBufferProcessor` is still armed from
+  `on_pipeline_started` (best-effort).
+- `pipecat_roark.__version__` is now read from the installed package metadata
+  instead of a hand-maintained literal, which had drifted to `0.1.0` in the
+  0.1.1 release and made it impossible to tell which version was installed.
+
 ## [0.1.1] - 2026-05-25
 
 ### Added
