@@ -6,6 +6,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-28
+
+### Fixed
+
+- **User turns are now captured from every STT, not just those that set
+  `frame.finalized`.** User transcripts are aggregated from `TranscriptionFrame`
+  segments and flushed at the turn boundary (`BotStartedSpeakingFrame`, the next
+  `UserStartedSpeakingFrame`, or `EndFrame` / `CancelFrame`) instead of being
+  committed per frame gated on `frame.finalized`. Streaming STTs (Deepgram,
+  OpenAI realtime, Speechmatics) leave `finalized` `False` on ordinary final
+  results, so the previous gate silently dropped most user turns. Every
+  `TranscriptionFrame` is a final result — interims are the separate
+  `InterimTranscriptionFrame` class — so segments are now accumulated
+  unconditionally and joined into one turn. Multi-segment utterances are merged;
+  back-to-back user turns with no bot reply between them are flushed separately.
+
+### Changed
+
+- Repository moved to
+  [`roarkhq/sdk-roark-analytics-python-pipecat`](https://github.com/roarkhq/sdk-roark-analytics-python-pipecat)
+  (the PyPI package and import remain `pipecat-roark` / `pipecat_roark`). Package
+  metadata URLs updated accordingly; the old URLs redirect.
+
 ## [0.1.2] - 2026-05-26
 
 ### Fixed
@@ -95,7 +118,8 @@ listing.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
   `pipecat_call_id`, `audio_buffer_processor` are optional.
 
-[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/releases/tag/v0.1.0
