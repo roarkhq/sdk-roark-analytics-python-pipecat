@@ -30,6 +30,7 @@ from pipecat.frames.frames import (  # noqa: E402
     TranscriptionFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.observers.base_observer import FramePushed  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
@@ -254,6 +255,104 @@ async def test_assistant_turn_anchored_to_bot_started_speaking() -> None:
     assert assistant_turn["content"] == "hi there"
     assert "audioOffsetMs" in assistant_turn
     assert assistant_turn["audioOffsetMs"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_user_turn_carries_end_edge_from_stopped_speaking() -> None:
+    """A user turn must carry endTimestamp/endAudioOffsetMs anchored to
+    UserStoppedSpeakingFrame (speech offset), so the turn's span is real and
+    downstream needn't infer the end from the next turn's start.
+    """
+    import asyncio
+
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(_audio_in()))  # anchor the offset clock
+    await obs.on_push_frame(_push(UserStartedSpeakingFrame()))
+    await asyncio.sleep(0.02)  # let the turn occupy a real span
+    await obs.on_push_frame(_push(_user_frame("hello")))
+    await obs.on_push_frame(_push(UserStoppedSpeakingFrame()))
+    # Bot replying flushes the user turn — its end must come from the stop edge
+    # captured above, NOT this later bot-onset moment.
+    await asyncio.sleep(0.02)
+    await obs.on_push_frame(_push(BotStartedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    user_turn = fake.ended[0]["transcript"][0]
+    assert isinstance(user_turn["endTimestamp"], str) and user_turn["endTimestamp"]
+    assert "endAudioOffsetMs" in user_turn
+    assert isinstance(user_turn["endAudioOffsetMs"], int)
+    # End is after start, and before the (later) bot onset that triggered flush.
+    assert user_turn["endAudioOffsetMs"] >= user_turn["audioOffsetMs"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_turn_carries_end_edge_from_bot_stopped() -> None:
+    """An assistant turn must carry endTimestamp/endAudioOffsetMs anchored to
+    BotStoppedSpeakingFrame (speech offset).
+    """
+    import asyncio
+
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(_audio_out()))  # anchor the offset clock
+    await obs.on_push_frame(_push(BotStartedSpeakingFrame()))
+    await obs.on_push_frame(_push(TTSTextFrame(text="hi there", aggregated_by="sentence")))
+    await asyncio.sleep(0.02)
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assistant_turn = fake.ended[0]["transcript"][0]
+    assert assistant_turn["role"] == "assistant"
+    assert isinstance(assistant_turn["endTimestamp"], str) and assistant_turn["endTimestamp"]
+    assert "endAudioOffsetMs" in assistant_turn
+    assert assistant_turn["endAudioOffsetMs"] >= assistant_turn["audioOffsetMs"]
+
+
+@pytest.mark.asyncio
+async def test_turn_end_falls_back_to_flush_moment_without_stop_frame() -> None:
+    """When no *StoppedSpeakingFrame arrives before the flush (e.g. pipeline
+    ends mid-turn), endTimestamp is still populated from the flush moment —
+    the field is never omitted.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(TTSTextFrame(text="goodbye", aggregated_by="sentence")))
+    # EndFrame flushes the assistant turn with no BotStoppedSpeakingFrame seen.
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assistant_turn = fake.ended[0]["transcript"][0]
+    assert isinstance(assistant_turn["endTimestamp"], str) and assistant_turn["endTimestamp"]
+
+
+@pytest.mark.asyncio
+async def test_turn_end_offset_omitted_when_recording_not_started() -> None:
+    """Without a recording anchor, endAudioOffsetMs is omitted (like
+    audioOffsetMs) but endTimestamp is still present.
+    """
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    # No on_pipeline_started / audio frame → no anchor.
+    await obs.on_push_frame(_push(UserStartedSpeakingFrame()))
+    await obs.on_push_frame(_push(_user_frame("hello", timestamp="t1")))
+    await obs.on_push_frame(_push(UserStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    user_turn = fake.ended[0]["transcript"][0]
+    assert "audioOffsetMs" not in user_turn
+    assert "endAudioOffsetMs" not in user_turn
+    assert isinstance(user_turn["endTimestamp"], str) and user_turn["endTimestamp"]
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Each transcript turn now carries a real end edge** — `endTimestamp` (ISO
+  8601 UTC) and `endAudioOffsetMs` (ms from the recording's first audio frame).
+  The end is anchored to the speech-offset VAD frame
+  (`UserStoppedSpeakingFrame` for the user, `BotStoppedSpeakingFrame` — or the
+  `InterruptionFrame` that cut the bot off — for the assistant). Previously a
+  turn shipped only its start (`timestamp` / `audioOffsetMs`), forcing consumers
+  to assume a turn ends where the next begins; that collapsed the inter-turn
+  silence and misplaced markers on the post-call player. When no stop frame
+  arrives before the turn is flushed (e.g. the pipeline ends mid-turn),
+  `endTimestamp` falls back to the flush moment and is never omitted;
+  `endAudioOffsetMs` is omitted only when recording isn't anchored, exactly as
+  `audioOffsetMs` already is.
+
 ## [0.1.3] - 2026-05-28
 
 ### Fixed
@@ -21,6 +36,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `InterimTranscriptionFrame` class — so segments are now accumulated
   unconditionally and joined into one turn. Multi-segment utterances are merged;
   back-to-back user turns with no bot reply between them are flushed separately.
+- **A pre-armed bring-your-own `AudioBufferProcessor` is no longer reset on
+  `on_pipeline_started`.** When a caller passes a processor they have already
+  started recording on (e.g. to also drive their own chunk upload), the observer
+  previously called `start_recording()` again from its lagging
+  `on_pipeline_started` callback — which calls `_reset_recording()`, wiping any
+  audio captured before the callback ran (typically the bot greeting) and
+  de-syncing the `audioOffsetMs` anchor from the recording's sample 0, so
+  transcript markers drifted. The observer now re-arms only if the processor is
+  not already recording, and tracks the offset anchor from the first observed
+  audio frame so timestamps stay aligned regardless of who armed recording.
 
 ### Changed
 
