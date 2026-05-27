@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI coding agents (Claude Code, Cursor, Copilot, Codex, Aider, etc.) working in this repository.
+Guidance for AI coding agents working in this repository. This file is read by tools that follow the `AGENTS.md` convention (Claude Code via `CLAUDE.md`, OpenAI Codex, and others). If you use a tool that reads a different file (Cursor: `.cursor/rules`, GitHub Copilot: `.github/copilot-instructions.md`, Aider: `CONVENTIONS.md`), point it at this file or mirror the relevant parts.
 
 **This is a public open-source repository.** Treat every commit, comment, PR description, and code suggestion as world-readable. The Open-source guardrails section below is the most important part of this file — read it before making any change.
 
@@ -90,18 +90,18 @@ This repository is public on GitHub and published to PyPI as `pipecat-roark`. An
 
 - **Internal infrastructure details.** No references to internal AWS accounts, account IDs, stage names, internal hostnames, Temporal workflows, GraphQL schemas, database tables, internal microservices, or any other component of the Roark backend that customers don't see.
 - **Internal tooling.** No links to Linear, Notion, Slack, internal dashboards, internal Grafana boards, internal runbooks, Google Docs, Figma files, or any other internal system. If a piece of context lives behind a Roark SSO login, it doesn't belong in this repo.
-- **Internal identifiers.** No ticket IDs (`ROARK-1234`), internal PR numbers from other repos, internal Slack thread links, employee handles, or codenames for unreleased features.
+- **Internal identifiers.** No internal ticket IDs (e.g. `PROJ-1234` from a private tracker), internal PR numbers from other repos, internal Slack thread links, employee handles, or codenames for unreleased features.
 - **Customer information.** Never name a Roark customer, paste their data, reference their use case, or mention contract terms. If a customer's bug report drove a fix, describe the bug behavior — not the customer.
 - **Unreleased product details.** Don't mention features that aren't shipped on roark.ai or in public docs. No internal roadmap, no "we're planning to add X", no references to private design discussions.
 - **Credentials and secrets.** No API keys, OAuth tokens, presigned URLs, webhook secrets, or `.env` values — even fake-looking ones. Use `rk_live_replace_me` style placeholders only.
 - **Personally identifiable information.** No real names, emails, phone numbers, or recordings in fixtures, examples, or test data. Synthetic only.
-- **Other private Roark repos.** Don't reference `app-roark-analytics`, internal package names, or anything else that 404s for an external reader.
+- **Other private Roark repos.** Don't reference internal package names, internal repo names, or anything else that 404s for an external reader. If you're unsure whether a repo is public, check whether it appears at <https://github.com/orgs/roarkhq/repositories?type=public>.
 
 ### PR descriptions and commit messages
 
 Write them so an external contributor (or a future maintainer with no Roark context) can fully understand them.
 
-- **Self-contained.** No "see Linear ticket ROARK-1234", no "as discussed in #eng-pipecat", no "per the design doc". State the user-facing problem and how this PR addresses it.
+- **Self-contained.** No "see internal ticket PROJ-1234", no "as discussed in #eng-channel", no "per the design doc". State the user-facing problem and how this PR addresses it.
 - **Describe behavior, not internal reasoning.** "Fix turn boundaries collapsing inter-turn silence" — yes. "Fix the bug Acme Corp reported in last Tuesday's call" — no.
 - **No internal jargon.** Roark has internal terms for things; use the public name (the one in the README and docs.roark.ai). If a concept doesn't have a public name yet, describe it generically.
 - **Reviewer mentions.** Tag GitHub usernames only. Don't paste Slack handles or internal team aliases.
