@@ -10,7 +10,7 @@ stereo audio recording. No other code changes required.
 - **Runtime-agnostic** — same code runs self-hosted *and* on Pipecat Cloud
 
 > Maintained by [Roark](https://roark.ai). File issues at
-> <https://github.com/roarkhq/pipecat-roark/issues>.
+> <https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/issues>.
 
 ---
 

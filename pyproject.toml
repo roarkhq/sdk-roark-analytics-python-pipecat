@@ -48,8 +48,8 @@ examples = [
 [project.urls]
 Homepage = "https://roark.ai"
 Documentation = "https://docs.roark.ai/integrations/pipecat"
-Repository = "https://github.com/roarkhq/pipecat-roark"
-Issues = "https://github.com/roarkhq/pipecat-roark/issues"
+Repository = "https://github.com/roarkhq/sdk-roark-analytics-python-pipecat"
+Issues = "https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pipecat_roark"]

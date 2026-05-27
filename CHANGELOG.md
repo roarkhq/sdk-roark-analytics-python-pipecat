@@ -95,6 +95,7 @@ listing.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
   `pipecat_call_id`, `audio_buffer_processor` are optional.
 
-[Unreleased]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/roarkhq/pipecat-roark/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/roarkhq/pipecat-roark/releases/tag/v0.1.0
+[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/releases/tag/v0.1.0
