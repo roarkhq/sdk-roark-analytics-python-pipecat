@@ -23,6 +23,7 @@ from pipecat.frames.frames import (  # noqa: E402
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     InputAudioRawFrame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     OutputAudioRawFrame,
     StartFrame,
@@ -37,9 +38,11 @@ from pipecat_roark.observer import RoarkObserver  # noqa: E402
 
 
 def _user_frame(text: str, *, user_id: str = "user", timestamp: str = "t") -> TranscriptionFrame:
-    frame = TranscriptionFrame(text=text, user_id=user_id, timestamp=timestamp)
-    frame.finalized = True  # type: ignore[attr-defined]
-    return frame
+    # Deliberately leaves `finalized` at its dataclass default (False), as
+    # streaming STTs (Deepgram, OpenAI, Speechmatics, the realtime models) do
+    # for ordinary final transcripts. The observer must capture these — every
+    # TranscriptionFrame is final; interims are InterimTranscriptionFrame.
+    return TranscriptionFrame(text=text, user_id=user_id, timestamp=timestamp)
 
 
 def _audio_in() -> InputAudioRawFrame:
@@ -108,6 +111,9 @@ class _FakeAudioBufferProcessor:
         self._handlers: list[Any] = []
         self.start_calls = 0
         self.stop_calls = 0
+        # Mirrors AudioBufferProcessor._recording; the observer reads it to avoid
+        # re-arming (and thereby resetting) a caller that already started recording.
+        self._recording = False
 
     def add_event_handler(self, name: str, handler: Any) -> None:
         assert name == "on_audio_data"
@@ -115,9 +121,11 @@ class _FakeAudioBufferProcessor:
 
     async def start_recording(self) -> None:
         self.start_calls += 1
+        self._recording = True
 
     async def stop_recording(self) -> None:
         self.stop_calls += 1
+        self._recording = False
 
     async def emit_audio(self, pcm: bytes) -> None:
         for h in self._handlers:
@@ -177,7 +185,9 @@ async def test_user_and_assistant_turns_captured_from_raw_frames() -> None:
     await obs.on_push_frame(
         _push(_user_frame("hello", user_id="user-42", timestamp="2026-05-18T12:00:00+00:00"))
     )
-    # Assistant turn: TTS emits one or more TTSTextFrames; BotStoppedSpeakingFrame closes it.
+    # Assistant turn: the bot starting to speak closes the user turn, then TTS
+    # emits one or more TTSTextFrames; BotStoppedSpeakingFrame closes the assistant turn.
+    await obs.on_push_frame(_push(BotStartedSpeakingFrame()))
     await obs.on_push_frame(_push(TTSTextFrame(text="hi", aggregated_by="sentence")))
     await obs.on_push_frame(_push(TTSTextFrame(text="there", aggregated_by="sentence")))
     await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
@@ -310,21 +320,32 @@ async def test_assistant_first_sets_agent_spoke_first() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interim_user_transcriptions_are_dropped() -> None:
+async def test_interim_frames_ignored_final_segments_aggregated() -> None:
+    """Interims (the separate InterimTranscriptionFrame class) are ignored, while
+    multiple final TranscriptionFrame segments within one turn aggregate into a
+    single user turn — independent of `finalized`, which streaming STTs leave
+    False. This is the Deepgram / OpenAI / Speechmatics / realtime case.
+    """
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
     await obs.on_pipeline_started()
-    interim = TranscriptionFrame(text="hel", user_id="user", timestamp="t1")
-    # `finalized` defaults to False on the dataclass; the observer must skip those.
+    await obs.on_push_frame(_push(UserStartedSpeakingFrame()))
+    # Partial result → ignored by the type filter (not a TranscriptionFrame).
+    interim = InterimTranscriptionFrame(text="I want", user_id="u", timestamp="t1")
     await obs.on_push_frame(_push(interim))
-    await obs.on_push_frame(_push(_user_frame("hello", timestamp="t2")))
+    # Two final segments for the same turn, both with finalized=False.
+    await obs.on_push_frame(_push(_user_frame("I want to book", timestamp="t2")))
+    await obs.on_push_frame(_push(_user_frame("a flight to Paris", timestamp="t3")))
+    # Bot replying closes the user turn.
+    await obs.on_push_frame(_push(BotStartedSpeakingFrame()))
     await obs.on_push_frame(_push(EndFrame()))
 
     transcript = fake.ended[0]["transcript"]
-    assert len(transcript) == 1
-    assert transcript[0]["content"] == "hello"
+    users = [m for m in transcript if m["role"] == "user"]
+    assert len(users) == 1
+    assert users[0]["content"] == "I want to book a flight to Paris"
 
 
 @pytest.mark.asyncio
@@ -463,6 +484,25 @@ async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
     ended = fake.ended[0]
     assert ended["recordingSampleRate"] == 24000
     assert ended["recordingNumChannels"] == 2
+
+
+@pytest.mark.asyncio
+async def test_prearmed_byo_processor_is_not_rearmed() -> None:
+    """Regression: when the caller passes a bring-your-own processor they have
+    already armed (app-agent-service starts recording before constructing the
+    observer), on_pipeline_started must NOT call start_recording again — doing
+    so resets the buffer, wiping audio captured before this lagging callback and
+    de-syncing the offset anchor from the recording's sample 0.
+    """
+    abp = _FakeAudioBufferProcessor(sample_rate=8000, num_channels=2)
+    abp._recording = True  # caller already armed it
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1", audio_buffer_processor=abp)
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    assert abp.start_calls == 0, "must not re-arm (reset) an already-recording processor"
+    assert len(fake.started) == 1, "call-started should still be posted"
 
 
 @pytest.mark.asyncio

@@ -4,11 +4,17 @@ The observer is drop-in: insert it into a pipeline's ``observers`` and it
 captures everything it needs by watching raw frames flow through the pipeline.
 
 * **Transcripts** are captured directly from STT and TTS frames — no extra
-  pipeline wiring required. User turns come from ``TranscriptionFrame`` (final
-  only); assistant turns are aggregated from ``TTSTextFrame`` chunks between
-  utterance boundaries (``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` /
-  ``EndFrame`` / ``CancelFrame``). Each turn is timestamped at its *speech
-  onset* — ``UserStartedSpeakingFrame`` for the user, ``BotStartedSpeakingFrame``
+  pipeline wiring required. User turns are aggregated from ``TranscriptionFrame``
+  segments (each one is a final result; interims are the separate
+  ``InterimTranscriptionFrame`` class) and flushed at the turn boundary
+  (``BotStartedSpeakingFrame`` / next ``UserStartedSpeakingFrame`` / ``EndFrame``
+  / ``CancelFrame``); assistant turns are aggregated from ``TTSTextFrame`` chunks
+  between utterance boundaries (``BotStoppedSpeakingFrame`` / ``InterruptionFrame``
+  / ``EndFrame`` / ``CancelFrame``). Aggregating user turns rather than committing
+  per frame keeps capture STT-agnostic — it does not depend on ``frame.finalized``,
+  which streaming services (Deepgram, OpenAI, Speechmatics) leave False on
+  ordinary finals. Each turn is timestamped at its *speech onset* —
+  ``UserStartedSpeakingFrame`` for the user, ``BotStartedSpeakingFrame``
   for the assistant — and also carries an ``audioOffsetMs`` measured from the
   start of the recording (WAV sample 0 == the first audio *frame* the pipeline
   carries, not ``start_recording()``), so dashboards can place speaker markers
@@ -33,7 +39,9 @@ Lifecycle:
    then POSTs ``call-started``. A bring-your-own processor is armed from
    ``on_pipeline_started`` instead (best-effort).
 2. During the call:
-     * ``TranscriptionFrame`` (final) → user turn buffered.
+     * ``TranscriptionFrame`` → aggregated into a pending user turn.
+     * ``BotStartedSpeakingFrame`` / next ``UserStartedSpeakingFrame`` → pending
+       user turn flushed.
      * ``TTSTextFrame`` → aggregated into a pending assistant turn.
      * ``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` → pending
        assistant turn flushed.
@@ -41,7 +49,7 @@ Lifecycle:
        tool-call messages buffered.
      * ``AudioBufferProcessor.on_audio_data`` → chunk PUT to S3.
 3. ``EndFrame`` / ``CancelFrame`` / ``StopFrame`` → flush any pending
-   assistant turn, drain in-flight uploads, POST ``call-ended``.
+   user + assistant turn, drain in-flight uploads, POST ``call-ended``.
 
 Failures are logged and swallowed — the observer never raises into the pipeline.
 """
@@ -226,6 +234,21 @@ class RoarkObserver(BaseObserver):
         self._assistant_start_iso: str | None = None
         self._assistant_start_monotonic: float | None = None
 
+        # Pending user turn — final STT segments accumulated between speaking
+        # boundaries, flushed when the bot starts replying, the next user turn
+        # begins, or the pipeline ends. We aggregate rather than commit each
+        # frame because final transcripts are STT-agnostic only at the *text*
+        # level: ``TranscriptionFrame`` is always a final result (interims are
+        # the separate ``InterimTranscriptionFrame`` class), but streaming STTs
+        # (Deepgram, OpenAI realtime, Speechmatics) emit several per turn and
+        # leave ``frame.finalized`` False unless an explicit finalize() round-
+        # trip happened — so gating on ``finalized`` silently drops most user
+        # turns. Aggregating on speaking boundaries instead captures the full
+        # turn for every STT without depending on that flag.
+        self._user_text_parts: list[str] = []
+        self._user_id: str | None = None
+        self._user_language: str | None = None
+
         # Audio-relative timing. Marker placement must use the recording's own
         # sample timeline, not wall clock, or markers drift from the merged
         # audio. WAV sample 0 is the first audio *frame* AudioBufferProcessor
@@ -239,7 +262,14 @@ class RoarkObserver(BaseObserver):
         # ``on_push_frame``). Turns are anchored to speech-onset VAD frames
         # (``UserStartedSpeakingFrame`` / ``BotStartedSpeakingFrame``) rather
         # than STT-finalize / TTS-text frames, which sit at the wrong edge.
-        self._recording_active = False
+        #
+        # Active from construction (not from ``on_pipeline_started``): that
+        # callback runs on a lagging per-observer queue, so when the caller
+        # pre-arms a bring-your-own processor the first audio frames can be
+        # observed before it drains — anchoring then would peg sample 0 too
+        # late and shift every ``audioOffsetMs``. Anchoring on the genuinely
+        # first observed audio frame keeps offsets aligned with the recording.
+        self._recording_active = True
         self._recording_anchor_monotonic: float | None = None
         self._user_started_iso: str | None = None
         self._user_started_monotonic: float | None = None
@@ -291,20 +321,22 @@ class RoarkObserver(BaseObserver):
         """
         if self._started_posted:
             return
-        # Arm a bring-your-own processor here (best-effort). The processor we
-        # create arms itself inline on the StartFrame instead — calling
-        # start_recording() again would reset its buffers and wipe any greeting
-        # audio already captured, so we must not do it for the default.
-        if not self._auto_arm_recording:
+        # Arm a bring-your-own processor here (best-effort) — but only if the
+        # caller hasn't already armed it. ``start_recording()`` always calls
+        # ``_reset_recording()``, so re-arming an already-recording processor
+        # wipes audio captured before this (lagging) callback runs — e.g. a bot
+        # greeting — and de-syncs the offset anchor from the recording's sample
+        # 0. The processor we create arms itself inline on the StartFrame, so it
+        # is already recording here and is likewise left untouched. The
+        # ``_recording`` read is best-effort: if a future Pipecat renames it,
+        # ``getattr`` falls back to re-arming (the prior behaviour).
+        if not self._auto_arm_recording and not getattr(
+            self.audio_processor, "_recording", False
+        ):
             try:
                 await self.audio_processor.start_recording()
             except Exception as err:  # pragma: no cover — defensive
                 log.warning("AudioBufferProcessor.start_recording failed: %r", err)
-        # Enable the observer's audio-offset tracking. The anchor itself is set
-        # on the first observed audio frame (see ``on_push_frame``), not here —
-        # WAV sample 0 is that first frame, which lands after media negotiation,
-        # TTS warmup, and leading silence.
-        self._recording_active = True
         await self._post_call_started()
 
     # ------------------------------------------------------------------ frames
@@ -366,19 +398,30 @@ class RoarkObserver(BaseObserver):
         # Speech-onset markers — capture the start edge of each turn so the
         # transcript timestamp lands where the audio actually begins.
         if isinstance(frame, UserStartedSpeakingFrame):
+            # A fresh user turn begins. Flush any pending one first (covers
+            # back-to-back user turns with no bot reply between them) so its
+            # text isn't merged into this turn, then anchor the new turn.
+            self._flush_user_turn()
             self._user_started_iso = _utc_now_iso()
             self._user_started_monotonic = self._now_monotonic()
             return
 
         if isinstance(frame, BotStartedSpeakingFrame):
+            # The bot replying means the user's turn is over — flush it before
+            # the assistant turn so transcript order stays user→assistant even
+            # when trailing final transcripts land after the bot starts.
+            self._flush_user_turn()
             self._bot_started_iso = _utc_now_iso()
             self._bot_started_monotonic = self._now_monotonic()
             return
 
         if isinstance(frame, TranscriptionFrame):
-            # STT may emit interim frames too; only commit on finalize.
-            if getattr(frame, "finalized", True):
-                self._record_user_transcription(frame)
+            # Every TranscriptionFrame is a final result (interims are the
+            # separate InterimTranscriptionFrame class, already excluded by the
+            # type filter above), so accumulate unconditionally — see the
+            # _user_text_parts note in __init__ for why we do NOT gate on
+            # frame.finalized.
+            self._accumulate_user_text(frame)
             return
 
         if isinstance(frame, TTSTextFrame):
@@ -398,7 +441,8 @@ class RoarkObserver(BaseObserver):
             return
 
         if isinstance(frame, (EndFrame, CancelFrame, StopFrame)):
-            # Capture any in-flight assistant text before the call-ended POST.
+            # Capture any in-flight user/assistant text before the call-ended POST.
+            self._flush_user_turn()
             self._flush_assistant_turn()
             await self._flush_call_ended(reason=self._reason_from_frame(frame))
             return
@@ -419,6 +463,7 @@ class RoarkObserver(BaseObserver):
             Safe to call multiple times — the regular ``EndFrame`` path
             no-ops on the second call.
         """
+        self._flush_user_turn()
         self._flush_assistant_turn()
         await self._flush_call_ended(reason=reason)
 
@@ -554,58 +599,80 @@ class RoarkObserver(BaseObserver):
 
     # ------------------------------------------------------------------ transcript
 
-    def _record_user_transcription(self, frame: object) -> None:
+    def _accumulate_user_text(self, frame: object) -> None:
         try:
             text = (getattr(frame, "text", "") or "").strip()
             if not text:
                 return
+            if not self._user_text_parts:
+                # First segment of this turn. If no UserStartedSpeakingFrame was
+                # seen (pipeline without VAD onset frames), fall back to the
+                # frame's own timestamp / wall clock so the turn is still anchored.
+                if self._user_started_iso is None:
+                    frame_ts = getattr(frame, "timestamp", None)
+                    self._user_started_iso = (
+                        frame_ts if isinstance(frame_ts, str) and frame_ts else _utc_now_iso()
+                    )
+                    self._user_started_monotonic = self._now_monotonic()
+            self._user_text_parts.append(text)
+            # Keep the latest non-empty user_id / language for the flushed turn.
+            user_id = getattr(frame, "user_id", None)
+            if isinstance(user_id, str) and user_id:
+                self._user_id = user_id
+            language = getattr(frame, "language", None)
+            if language is not None:
+                # Pipecat's Language is a StrEnum; stringify either way.
+                self._user_language = str(language)
+        except Exception as err:  # pragma: no cover — defensive
+            log.warning("failed to accumulate user text: %r", err)
 
+    def _flush_user_turn(self) -> None:
+        if not self._user_text_parts:
+            return
+        try:
+            content = _join_text_chunks(self._user_text_parts).strip()
             # Anchor the turn to where the user *started* speaking, not the
             # STT-finalize moment (end of utterance + recognition latency) —
-            # otherwise the marker lands well after the audio. Consume and
-            # clear the pending speech-onset edge; fall back to the STT frame's
-            # own timestamp, then wall clock, if VAD frames aren't in the pipeline.
-            started_iso = self._user_started_iso
-            started_monotonic = self._user_started_monotonic
+            # otherwise the marker lands well after the audio.
+            timestamp = self._user_started_iso or _utc_now_iso()
+            offset_ms = self._offset_ms_from(self._user_started_monotonic)
+            user_id = self._user_id
+            language = self._user_language
+            self._user_text_parts = []
             self._user_started_iso = None
             self._user_started_monotonic = None
-
-            timestamp = started_iso
-            if not timestamp:
-                frame_ts = getattr(frame, "timestamp", None)
-                timestamp = frame_ts if isinstance(frame_ts, str) and frame_ts else _utc_now_iso()
-
-            offset_ms = (
-                self._offset_ms_from(started_monotonic)
-                if started_monotonic is not None
-                else self._audio_offset_ms()
-            )
-
+            self._user_id = None
+            self._user_language = None
+            if not content:
+                return
             entry: TranscriptMessage = {
                 "role": "user",
-                "content": text,
+                "content": content,
                 "timestamp": timestamp,
             }
             if offset_ms is not None:
                 entry["audioOffsetMs"] = offset_ms
-            user_id = getattr(frame, "user_id", None)
-            if isinstance(user_id, str) and user_id:
+            if user_id:
                 entry["userId"] = user_id
-            language = getattr(frame, "language", None)
             if language is not None:
-                # Pipecat's Language is a StrEnum; stringify either way.
-                entry["language"] = str(language)
+                entry["language"] = language
 
             if self._first_speaker is None:
                 self._first_speaker = "user"
             self._transcript.append(entry)
             log.info(
                 "transcript user turn captured: chars=%d total=%d",
-                len(text),
+                len(content),
                 len(self._transcript),
             )
         except Exception as err:  # pragma: no cover — defensive
-            log.warning("failed to capture user transcription: %r", err)
+            log.warning("failed to flush user turn: %r", err)
+            # Reset so a parser glitch doesn't poison the next turn.
+            self._user_text_parts = []
+            self._user_started_iso = None
+            self._user_started_monotonic = None
+            self._user_id = None
+            self._user_language = None
 
     def _accumulate_assistant_text(self, frame: object) -> None:
         try:
@@ -623,7 +690,7 @@ class RoarkObserver(BaseObserver):
         if not self._assistant_text_parts:
             return
         try:
-            content = _join_tts_chunks(self._assistant_text_parts).strip()
+            content = _join_text_chunks(self._assistant_text_parts).strip()
             # Prefer the bot-audio onset (BotStartedSpeakingFrame) — that's
             # where the speech actually lands in the recording. The first
             # TTSTextFrame is text generation, which precedes audio playout;
@@ -727,10 +794,12 @@ class RoarkObserver(BaseObserver):
         return "unknown"
 
 
-def _join_tts_chunks(parts: list[str]) -> str:
-    """Join ``TTSTextFrame.text`` chunks with a single space between non-empty
-    parts. ``TTSTextFrame`` is already aggregated (sentence / utterance), so its
-    text is fully spaced internally — we only need to separate consecutive chunks.
+def _join_text_chunks(parts: list[str]) -> str:
+    """Join transcript text chunks with a single space between non-empty parts.
+
+    Used for both ``TTSTextFrame.text`` (assistant) and ``TranscriptionFrame.text``
+    (user) segments. Each chunk is already aggregated (sentence / utterance) and
+    fully spaced internally — we only need to separate consecutive chunks.
     """
     result = ""
     for text in parts:
