@@ -17,8 +17,10 @@ class TranscriptMessage(TypedDict, total=False):
 
     role: Literal["assistant", "user", "system"]
     content: str
-    timestamp: str  # ISO 8601 UTC — anchored to speech onset (VAD), not STT/TTS emit
-    audioOffsetMs: int  # ms from start of recording (WAV sample 0); place markers here
+    timestamp: str  # ISO 8601 UTC — turn START, anchored to speech onset (VAD), not STT/TTS emit
+    endTimestamp: str  # ISO 8601 UTC — turn END, anchored to speech offset (VAD)
+    audioOffsetMs: int  # ms from recording start (WAV sample 0) to speech onset; start marker
+    endAudioOffsetMs: int  # ms from recording start (WAV sample 0) to speech offset; end marker
     userId: str
     language: str  # BCP-47
 

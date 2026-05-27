@@ -6,6 +6,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Each transcript turn now carries a real end edge** — `endTimestamp` (ISO
+  8601 UTC) and `endAudioOffsetMs` (ms from the recording's first audio frame).
+  The end is anchored to the speech-offset VAD frame
+  (`UserStoppedSpeakingFrame` for the user, `BotStoppedSpeakingFrame` — or the
+  `InterruptionFrame` that cut the bot off — for the assistant). Previously a
+  turn shipped only its start (`timestamp` / `audioOffsetMs`), forcing consumers
+  to assume a turn ends where the next begins; that collapsed the inter-turn
+  silence and misplaced markers on the post-call player. When no stop frame
+  arrives before the turn is flushed (e.g. the pipeline ends mid-turn),
+  `endTimestamp` falls back to the flush moment and is never omitted;
+  `endAudioOffsetMs` is omitted only when recording isn't anchored, exactly as
+  `audioOffsetMs` already is.
+
 ## [0.1.3] - 2026-05-28
 
 ### Fixed

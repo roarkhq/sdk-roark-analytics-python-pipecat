@@ -15,10 +15,15 @@ captures everything it needs by watching raw frames flow through the pipeline.
   which streaming services (Deepgram, OpenAI, Speechmatics) leave False on
   ordinary finals. Each turn is timestamped at its *speech onset* —
   ``UserStartedSpeakingFrame`` for the user, ``BotStartedSpeakingFrame``
-  for the assistant — and also carries an ``audioOffsetMs`` measured from the
-  start of the recording (WAV sample 0 == the first audio *frame* the pipeline
-  carries, not ``start_recording()``), so dashboards can place speaker markers
-  on the recording's own sample timeline instead of wall clock.
+  for the assistant — and at its *speech offset* (``endTimestamp``) —
+  ``UserStoppedSpeakingFrame`` / ``BotStoppedSpeakingFrame`` (or the
+  ``InterruptionFrame`` that cut the bot off). Shipping the real end edge means
+  consumers no longer have to assume a turn ends where the next begins, which
+  collapses inter-turn silence and misplaces markers. Both edges also carry an
+  offset (``audioOffsetMs`` / ``endAudioOffsetMs``) measured from the start of
+  the recording (WAV sample 0 == the first audio *frame* the pipeline carries,
+  not ``start_recording()``), so dashboards can place speaker markers on the
+  recording's own sample timeline instead of wall clock.
 * **Tool calls** come from ``FunctionCallInProgressFrame`` /
   ``FunctionCallResultFrame``. Each is shipped as a discrete ``tool_call`` /
   ``tool_result`` record discriminated by ``kind``; Roark pairs them by
@@ -40,11 +45,12 @@ Lifecycle:
    ``on_pipeline_started`` instead (best-effort).
 2. During the call:
      * ``TranscriptionFrame`` → aggregated into a pending user turn.
+     * ``UserStoppedSpeakingFrame`` → records the pending user turn's end edge.
      * ``BotStartedSpeakingFrame`` / next ``UserStartedSpeakingFrame`` → pending
        user turn flushed.
      * ``TTSTextFrame`` → aggregated into a pending assistant turn.
-     * ``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` → pending
-       assistant turn flushed.
+     * ``BotStoppedSpeakingFrame`` / ``InterruptionFrame`` → records the
+       assistant turn's end edge, then flushes it.
      * ``FunctionCallInProgressFrame`` / ``FunctionCallResultFrame`` →
        tool-call messages buffered.
      * ``AudioBufferProcessor.on_audio_data`` → chunk PUT to S3.
@@ -271,10 +277,19 @@ class RoarkObserver(BaseObserver):
         # first observed audio frame keeps offsets aligned with the recording.
         self._recording_active = True
         self._recording_anchor_monotonic: float | None = None
+        # Turn START edges (speech onset). End edges below capture speech offset
+        # — UserStoppedSpeakingFrame / BotStoppedSpeakingFrame — so each turn
+        # carries both its real start and end. Without the end edge, downstream
+        # has to assume a turn ends where the next begins, which collapses the
+        # inter-turn silence and misplaces markers.
         self._user_started_iso: str | None = None
         self._user_started_monotonic: float | None = None
+        self._user_stopped_iso: str | None = None
+        self._user_stopped_monotonic: float | None = None
         self._bot_started_iso: str | None = None
         self._bot_started_monotonic: float | None = None
+        self._bot_stopped_iso: str | None = None
+        self._bot_stopped_monotonic: float | None = None
 
         self._chunk_index = 0
         self._inflight_uploads: set[asyncio.Task[None]] = set()
@@ -356,6 +371,7 @@ class RoarkObserver(BaseObserver):
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
+            UserStoppedSpeakingFrame,
         )
 
         frame: Frame = data.frame
@@ -378,6 +394,7 @@ class RoarkObserver(BaseObserver):
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
+            UserStoppedSpeakingFrame,
             BotStartedSpeakingFrame,
             BotStoppedSpeakingFrame,
             InterruptionFrame,
@@ -400,10 +417,23 @@ class RoarkObserver(BaseObserver):
         if isinstance(frame, UserStartedSpeakingFrame):
             # A fresh user turn begins. Flush any pending one first (covers
             # back-to-back user turns with no bot reply between them) so its
-            # text isn't merged into this turn, then anchor the new turn.
+            # text isn't merged into this turn, then anchor the new turn. Clear
+            # any stale end edge so a previous (possibly empty) turn's offset
+            # can't bleed into this one.
             self._flush_user_turn()
             self._user_started_iso = _utc_now_iso()
             self._user_started_monotonic = self._now_monotonic()
+            self._user_stopped_iso = None
+            self._user_stopped_monotonic = None
+            return
+
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            # Speech offset — the real end of the user's turn. STT finals may
+            # still trail in afterwards (recognition latency), and the turn is
+            # only flushed later (bot reply / next user turn / EndFrame), so we
+            # stash the end edge here and read it at flush time.
+            self._user_stopped_iso = _utc_now_iso()
+            self._user_stopped_monotonic = self._now_monotonic()
             return
 
         if isinstance(frame, BotStartedSpeakingFrame):
@@ -429,6 +459,11 @@ class RoarkObserver(BaseObserver):
             return
 
         if isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
+            # This frame *is* the assistant turn's end edge (bot finished, or was
+            # interrupted). Stamp it before flushing so the turn carries a real
+            # end rather than letting downstream infer it from the next turn.
+            self._bot_stopped_iso = _utc_now_iso()
+            self._bot_stopped_monotonic = self._now_monotonic()
             self._flush_assistant_turn()
             # Fall through — these frames are not call terminators.
 
@@ -511,6 +546,22 @@ class RoarkObserver(BaseObserver):
     def _audio_offset_ms(self) -> int | None:
         """Audio offset (ms) at the current instant."""
         return self._offset_ms_from(self._now_monotonic())
+
+    def _resolve_turn_end(
+        self, stopped_iso: str | None, stopped_monotonic: float | None
+    ) -> tuple[str, int | None]:
+        """End edge for a turn as ``(ISO, audioOffsetMs|None)``.
+
+        Uses the captured speech-offset frame
+        (``UserStoppedSpeakingFrame`` / ``BotStoppedSpeakingFrame``) when one
+        arrived before the flush; otherwise falls back to the current instant
+        (the flush moment) as a best-effort end — mirroring the start edge's
+        own wall-clock fallback so the field is always populated. The offset is
+        omitted (``None``) when recording isn't anchored, same as the start.
+        """
+        if stopped_iso is not None:
+            return stopped_iso, self._offset_ms_from(stopped_monotonic)
+        return _utc_now_iso(), self._audio_offset_ms()
 
     # ------------------------------------------------------------------ audio
 
@@ -636,11 +687,18 @@ class RoarkObserver(BaseObserver):
             # otherwise the marker lands well after the audio.
             timestamp = self._user_started_iso or _utc_now_iso()
             offset_ms = self._offset_ms_from(self._user_started_monotonic)
+            # End edge: where the user stopped speaking (speech offset), so the
+            # turn's span is real rather than inferred from the next turn.
+            end_timestamp, end_offset_ms = self._resolve_turn_end(
+                self._user_stopped_iso, self._user_stopped_monotonic
+            )
             user_id = self._user_id
             language = self._user_language
             self._user_text_parts = []
             self._user_started_iso = None
             self._user_started_monotonic = None
+            self._user_stopped_iso = None
+            self._user_stopped_monotonic = None
             self._user_id = None
             self._user_language = None
             if not content:
@@ -649,9 +707,12 @@ class RoarkObserver(BaseObserver):
                 "role": "user",
                 "content": content,
                 "timestamp": timestamp,
+                "endTimestamp": end_timestamp,
             }
             if offset_ms is not None:
                 entry["audioOffsetMs"] = offset_ms
+            if end_offset_ms is not None:
+                entry["endAudioOffsetMs"] = end_offset_ms
             if user_id:
                 entry["userId"] = user_id
             if language is not None:
@@ -671,6 +732,8 @@ class RoarkObserver(BaseObserver):
             self._user_text_parts = []
             self._user_started_iso = None
             self._user_started_monotonic = None
+            self._user_stopped_iso = None
+            self._user_stopped_monotonic = None
             self._user_id = None
             self._user_language = None
 
@@ -702,20 +765,29 @@ class RoarkObserver(BaseObserver):
                 else self._assistant_start_monotonic
             )
             offset_ms = self._offset_ms_from(start_monotonic)
+            # End edge: where the bot stopped speaking (or was interrupted).
+            end_timestamp, end_offset_ms = self._resolve_turn_end(
+                self._bot_stopped_iso, self._bot_stopped_monotonic
+            )
             self._assistant_text_parts = []
             self._assistant_start_iso = None
             self._assistant_start_monotonic = None
             self._bot_started_iso = None
             self._bot_started_monotonic = None
+            self._bot_stopped_iso = None
+            self._bot_stopped_monotonic = None
             if not content:
                 return
             entry: TranscriptMessage = {
                 "role": "assistant",
                 "content": content,
                 "timestamp": timestamp,
+                "endTimestamp": end_timestamp,
             }
             if offset_ms is not None:
                 entry["audioOffsetMs"] = offset_ms
+            if end_offset_ms is not None:
+                entry["endAudioOffsetMs"] = end_offset_ms
             if self._first_speaker is None:
                 self._first_speaker = "assistant"
             self._transcript.append(entry)
@@ -732,6 +804,8 @@ class RoarkObserver(BaseObserver):
             self._assistant_start_monotonic = None
             self._bot_started_iso = None
             self._bot_started_monotonic = None
+            self._bot_stopped_iso = None
+            self._bot_stopped_monotonic = None
 
     # ------------------------------------------------------------------ tool calls
 
