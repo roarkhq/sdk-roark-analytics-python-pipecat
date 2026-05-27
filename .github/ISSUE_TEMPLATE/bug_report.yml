@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a defect in pipecat-roark
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. For security issues, please use the [private advisory flow](https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/security/advisories/new) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal reproduction. Code snippet or link to a small repo is ideal.
+      placeholder: |
+        1. Configure `RoarkObserver` with `...`
+        2. Run pipeline against `...`
+        3. Observe `...`
+    validations:
+      required: true
+
+  - type: input
+    id: pipecat-roark-version
+    attributes:
+      label: pipecat-roark version
+      placeholder: "e.g. 0.3.1 (output of `pip show pipecat-roark`)"
+    validations:
+      required: true
+
+  - type: input
+    id: pipecat-version
+    attributes:
+      label: pipecat-ai version
+      placeholder: "e.g. 0.0.108"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "e.g. 3.11.7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Self-hosted
+        - Pipecat Cloud
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error output. Please redact tokens, recording URLs, or customer data.
+      render: shell
