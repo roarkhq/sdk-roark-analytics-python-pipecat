@@ -6,6 +6,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **The default recording processor now arms recording inline on the
+  `StartFrame` and delegates silence handling to Pipecat's stock
+  `AudioBufferProcessor`.** The observer's auto-created processor is an
+  `InlineArmingAudioBufferProcessor` — a thin `AudioBufferProcessor` subclass
+  whose only change is firing `start_recording()` the instant the `StartFrame`
+  is handled (so a bot that speaks first is captured from sample 0). Silence is
+  now the stock cross-channel sync: each channel (L = user, R = agent) is padded
+  up to the other's position as audio arrives — driven by the continuous input
+  stream and skipped while a channel is actively speaking — so real inter-turn
+  pauses are preserved and the merged tracks stay aligned on one real-time
+  timeline. This replaces a short-lived monotonic-wall-clock mixer that glued
+  the agent's turns back-to-back: a bursty TTS turn pushed the bot write-head
+  permanently *ahead* of the wall clock, so `gap = elapsed - write_head` stayed
+  ≤ 0 and the silence between turns was never filled — shortening the recording
+  and drifting every transcript `audioOffsetMs` past where the speech sits. A
+  bring-your-own `AudioBufferProcessor` is untouched and keeps Pipecat's stock
+  buffering.
+
 ## [0.1.4] - 2026-05-28
 
 ### Added

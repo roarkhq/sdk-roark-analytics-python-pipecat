@@ -129,39 +129,32 @@ def _result_to_string(value: object) -> str:
 def _make_self_recording_audio_buffer_processor(
     *, num_channels: int, buffer_size: int
 ) -> AudioBufferProcessor:
-    """Build an ``AudioBufferProcessor`` that arms recording *inline* on ``StartFrame``.
+    """Build the default recording processor: a self-arming stereo recorder.
 
-    ``AudioBufferProcessor`` silently drops every audio frame until
-    ``start_recording()`` flips ``_recording`` on. The obvious trigger — an
-    observer's ``on_pipeline_started`` callback — is a trap: observer callbacks
-    run on a *lagging* per-observer queue (see Pipecat's ``TaskObserver``), so a
-    bot that speaks first can reach this inline processor before the queued
-    ``start_recording()`` is drained, and its greeting audio is discarded. That
-    is the "first couple of seconds missing" bug.
+    Returns a :class:`~pipecat_roark._recorder.InlineArmingAudioBufferProcessor`
+    — Pipecat's stock ``AudioBufferProcessor`` with one change: it **arms
+    recording inline on the ``StartFrame``**. ``AudioBufferProcessor`` silently
+    drops every audio frame until ``start_recording()`` flips ``_recording`` on.
+    The obvious trigger — an observer's ``on_pipeline_started`` callback — is a
+    trap: observer callbacks run on a *lagging* per-observer queue (see Pipecat's
+    ``TaskObserver``), so a bot that speaks first can reach this inline processor
+    before the queued ``start_recording()`` is drained, and its greeting audio is
+    discarded — the "first couple of seconds missing" bug. Arming from the
+    processor's own ``StartFrame`` is deterministic: Pipecat pushes queued frames
+    (the greeting included) only *after* the ``StartFrame`` has passed through
+    this processor. It also works on every Pipecat version, unlike
+    ``on_pipeline_started`` which older releases don't deliver to observers at
+    all (e.g. 0.0.101 has no such hook), silently leaving recording disarmed.
 
-    Arming from the processor's own ``StartFrame`` is deterministic: Pipecat
-    pushes queued frames (the greeting included) only *after* the ``StartFrame``
-    has reached the pipeline sink — i.e. after it has already passed through
-    this processor — so recording is guaranteed armed before any audio arrives.
-    This also works on every Pipecat version, unlike ``on_pipeline_started``,
-    which older Pipecat releases don't deliver to observers at all (e.g. 0.0.101
-    has no such hook), silently leaving recording disarmed.
+    Silence handling is the stock processor's own cross-channel sync: each
+    channel is padded up to the other's position whenever audio arrives (skipping
+    the pad while a channel is actively speaking), so real inter-turn pauses are
+    preserved and the merged tracks stay aligned on one real-time timeline. See
+    :mod:`pipecat_roark._recorder` for why we do NOT override that algorithm.
     """
-    from pipecat.frames.frames import StartFrame
-    from pipecat.processors.audio.audio_buffer_processor import (
-        AudioBufferProcessor as _AudioBufferProcessor,
-    )
+    from ._recorder import InlineArmingAudioBufferProcessor
 
-    class _SelfRecordingAudioBufferProcessor(_AudioBufferProcessor):
-        async def process_frame(self, frame, direction):  # type: ignore[no-untyped-def]
-            await super().process_frame(frame, direction)
-            # Arm once, the instant the StartFrame is handled inline — before any
-            # greeting audio frame can reach us. ``start_recording`` only resets
-            # the (still-empty) buffers here, so it costs nothing.
-            if isinstance(frame, StartFrame) and not self._recording:
-                await self.start_recording()
-
-    return _SelfRecordingAudioBufferProcessor(
+    return InlineArmingAudioBufferProcessor(
         num_channels=num_channels, buffer_size=buffer_size
     )
 

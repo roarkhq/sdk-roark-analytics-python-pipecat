@@ -110,6 +110,14 @@ transport/provider negotiated — 8 kHz on Twilio/Telnyx, 16/24/48 kHz on
 Daily/LiveKit, etc. The rate is forwarded to Roark as the recording sample
 rate.
 
+The default processor is Pipecat's stock `AudioBufferProcessor` with one
+change: it **arms recording inline on the `StartFrame`** so a bot that speaks
+first is captured from sample 0 (the "first couple of seconds missing" bug).
+Silence is handled by the stock cross-channel sync — each channel (L = user,
+R = agent) is padded up to the other's position as audio arrives, so real
+inter-turn pauses are preserved and the merged tracks stay aligned on one
+real-time timeline. A bring-your-own `AudioBufferProcessor` is used as-is.
+
 ### Failure mode
 
 Failures are logged and swallowed — **the observer never raises into the
