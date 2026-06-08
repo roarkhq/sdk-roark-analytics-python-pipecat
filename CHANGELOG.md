@@ -8,13 +8,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **Optional `roark_integration_id`** to attribute each call to a specific Roark
+- **Required `roark_integration_id`** attributing each call to a specific Roark
   Pipecat integration. Pass it to `RoarkObserver(roark_integration_id=...)` or
   set the `ROARK_INTEGRATION_ID` environment variable (the constructor arg wins);
-  copy the id from the Roark dashboard when you create a Pipecat integration. When
-  set, it ships as `roarkIntegrationId` on both the `call-started` and
-  `call-ended` webhook bodies. Fully backward compatible — when unset the field is
-  omitted and Roark falls back to the project's self-hosted integration.
+  copy the id from the Roark dashboard when you create a Pipecat integration. It
+  ships as `roarkIntegrationId` on both the `call-started` and `call-ended`
+  webhook bodies.
+
+### Changed
+
+- **BREAKING:** `RoarkObserver` now requires a Roark integration id — it raises a
+  `ValueError` at construction if neither `roark_integration_id=` nor the
+  `ROARK_INTEGRATION_ID` environment variable is set. Existing deployments must
+  set `ROARK_INTEGRATION_ID` (self-hosted env var / `pcc secrets` on Pipecat
+  Cloud) before upgrading.
 
 ## [0.1.4] - 2026-05-28
 

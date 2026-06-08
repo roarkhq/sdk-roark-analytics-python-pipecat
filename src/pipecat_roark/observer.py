@@ -221,10 +221,15 @@ class RoarkObserver(BaseObserver):
                 looked up by ``conversation.id`` in your tracing backend.
             roark_integration_id: The Roark integration this deployment
                 belongs to, copied from the Roark dashboard when you create a
-                Pipecat integration. Optional — defaults to the
-                ``ROARK_INTEGRATION_ID`` environment variable, and when neither
-                is set nothing is sent and Roark falls back to the project's
-                self-hosted integration.
+                Pipecat integration. **Required** — defaults to the
+                ``ROARK_INTEGRATION_ID`` environment variable when not passed.
+                A ``ValueError`` is raised if neither is set. Shipped as
+                ``roarkIntegrationId`` on every call so Roark can attribute the
+                call to the right integration.
+
+        Raises:
+            ValueError: if no ``roark_integration_id`` is given and the
+                ``ROARK_INTEGRATION_ID`` environment variable is unset/empty.
         """
         super().__init__()
 
@@ -234,7 +239,14 @@ class RoarkObserver(BaseObserver):
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
-        self._roark_integration_id = roark_integration_id or os.environ.get("ROARK_INTEGRATION_ID")
+        integration_id = roark_integration_id or os.environ.get("ROARK_INTEGRATION_ID")
+        if not integration_id:
+            raise ValueError(
+                "roark_integration_id is required: pass roark_integration_id=... or set the "
+                "ROARK_INTEGRATION_ID environment variable (copy it from the Roark dashboard "
+                "when you create a Pipecat integration)."
+            )
+        self._roark_integration_id: str = integration_id
 
         self._transcript: list[TranscriptMessage] = []
         self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
@@ -522,13 +534,12 @@ class RoarkObserver(BaseObserver):
             "pipecatCallId": self._pipecat_call_id,
             "eventTimestamp": self._call_started_iso,
             "agentId": self._agent_id,
+            "roarkIntegrationId": self._roark_integration_id,
         }
         if self._agent_name:
             payload["agentName"] = self._agent_name
         if self._agent_prompt:
             payload["agentPrompt"] = self._agent_prompt
-        if self._roark_integration_id:
-            payload["roarkIntegrationId"] = self._roark_integration_id
 
         log.info(
             "call-started: pipecatCallId=%s agentId=%s roarkIntegrationId=%s",
@@ -631,6 +642,7 @@ class RoarkObserver(BaseObserver):
             "callStartedAt": self._call_started_iso,
             "callEndedAt": ended_iso,
             "callEndedReason": reason,
+            "roarkIntegrationId": self._roark_integration_id,
         }
         if self._first_speaker is not None:
             payload["agentSpokeFirst"] = self._first_speaker == "assistant"
@@ -647,8 +659,6 @@ class RoarkObserver(BaseObserver):
             )
         if self._tool_calls:
             payload["toolCalls"] = list(self._tool_calls)
-        if self._roark_integration_id:
-            payload["roarkIntegrationId"] = self._roark_integration_id
 
         log.info(
             "call-ended: pipecatCallId=%s reason=%s transcript=%d toolCalls=%d chunks=%d "

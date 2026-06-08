@@ -41,21 +41,22 @@ pip install pipecat-roark
 
 ### 2. Configure
 
-Set one env var:
+Set two env vars:
 
 ```bash
 ROARK_API_KEY=rk_live_...
 
-# Optional — copy from the Roark dashboard when you create a Pipecat integration.
+# Copy from the Roark dashboard when you create a Pipecat integration.
 ROARK_INTEGRATION_ID=...
 ```
 
-> The Roark API key is all you configure — the observer knows its own service
-> endpoints. `ROARK_API_KEY` can also be passed as `api_key=` to `RoarkObserver`.
+> The observer knows its own service endpoints, so these two values are all you
+> configure. Both can also be passed to `RoarkObserver` directly (`api_key=`,
+> `roark_integration_id=`), which take precedence over the env vars.
 >
-> `ROARK_INTEGRATION_ID` is optional: set it to attribute calls to a specific
-> Roark Pipecat integration (also accepted as `roark_integration_id=`). Omit it
-> and Roark falls back to the project's self-hosted integration.
+> `ROARK_INTEGRATION_ID` is **required** — it attributes each call to a specific
+> Roark Pipecat integration. `RoarkObserver` raises a `ValueError` at startup if
+> neither the env var nor `roark_integration_id=` is set.
 
 ### 3. Wire the observer
 
@@ -137,7 +138,7 @@ and the same file runs in both modes — see `examples/bot.py`.
 |---|---|---|
 | Entry point | `python bot.py` → `pipecat.runner.run.main()` dispatches to `bot()` | Platform invokes `bot(runner_args)` per session |
 | Room/token | You provision (Daily REST, `pipecat.runner.daily.configure`, …) | Injected via `DailyRunnerArguments` |
-| Env vars | `ROARK_API_KEY` (+ optional `ROARK_INTEGRATION_ID`) in `.env` / your secrets manager | same vars via `pcc secrets set <name> KEY=value …` |
+| Env vars | `ROARK_API_KEY` + `ROARK_INTEGRATION_ID` in `.env` / your secrets manager | same vars via `pcc secrets set <name> KEY=value …` |
 | Teardown | `EndFrame` is reliable | Sessions can vanish — wire [`aflush()` on disconnect](#handling-webrtc-disconnects) |
 | Observer wiring | ← identical → | ← identical → |
 
@@ -145,7 +146,7 @@ and the same file runs in both modes — see `examples/bot.py`.
 
 ```bash
 cp .env.example .env
-# fill in ROARK_API_KEY (and optionally ROARK_INTEGRATION_ID)
+# fill in ROARK_API_KEY and ROARK_INTEGRATION_ID
 uv sync --all-extras
 uv run python examples/bot.py --transport daily   # or: --transport webrtc
 ```
@@ -157,7 +158,7 @@ Set the same vars as deployment secrets, then deploy:
 ```bash
 pcc secrets set roark-secrets \
     ROARK_API_KEY=rk_live_... \
-    ROARK_INTEGRATION_ID=...        # optional — from the Roark dashboard
+    ROARK_INTEGRATION_ID=...        # from the Roark dashboard
 
 pcc deploy
 pcc agent start <agent-name>

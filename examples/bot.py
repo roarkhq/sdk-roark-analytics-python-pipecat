@@ -108,8 +108,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         # correlate Roark calls with Pipecat Cloud / Daily session logs.
         pipecat_call_id=getattr(runner_args, "session_id", None),
         # Which Roark Pipecat integration this deployment belongs to (from the
-        # Roark dashboard). Optional — omit to fall back to the project's
-        # self-hosted integration.
+        # Roark dashboard). Required — set ROARK_INTEGRATION_ID (the observer
+        # also reads it from the environment automatically).
         roark_integration_id=os.environ.get("ROARK_INTEGRATION_ID"),
     )
 

@@ -38,6 +38,15 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from pipecat_roark.observer import RoarkObserver  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _default_integration_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``roark_integration_id`` is required; supply one via the env var for every
+    test so constructions that don't care about it still succeed. Tests that
+    exercise the id explicitly override or delete the env var themselves.
+    """
+    monkeypatch.setenv("ROARK_INTEGRATION_ID", "int_default")
+
+
 def _user_frame(text: str, *, user_id: str = "user", timestamp: str = "t") -> TranscriptionFrame:
     # Deliberately leaves `finalized` at its dataclass default (False), as
     # streaming STTs (Deepgram, OpenAI, Speechmatics, the realtime models) do
@@ -201,20 +210,13 @@ async def test_constructor_roark_integration_id_overrides_env(
     assert fake.ended[0]["roarkIntegrationId"] == "int_explicit"
 
 
-@pytest.mark.asyncio
-async def test_roark_integration_id_absent_when_unset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_missing_roark_integration_id_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """roark_integration_id is required — construction fails when neither the
+    constructor arg nor the ROARK_INTEGRATION_ID env var supplies one.
+    """
     monkeypatch.delenv("ROARK_INTEGRATION_ID", raising=False)
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
-    fake = _FakeClient()
-    obs._client = fake  # type: ignore[assignment]
-
-    await obs.on_pipeline_started()
-    await obs.on_push_frame(_push(EndFrame()))
-
-    assert "roarkIntegrationId" not in fake.started[0]
-    assert "roarkIntegrationId" not in fake.ended[0]
+    with pytest.raises(ValueError, match="roark_integration_id is required"):
+        RoarkObserver(api_key="rk_test", agent_id="agent-1")
 
 
 @pytest.mark.asyncio
