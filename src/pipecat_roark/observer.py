@@ -222,10 +222,11 @@ class RoarkObserver(BaseObserver):
             roark_integration_id: The Roark integration this deployment
                 belongs to, copied from the Roark dashboard when you create a
                 Pipecat integration. **Required** — defaults to the
-                ``ROARK_INTEGRATION_ID`` environment variable when not passed.
-                A ``ValueError`` is raised if neither is set. Shipped as
-                ``roarkIntegrationId`` on every call so Roark can attribute the
-                call to the right integration.
+                ``ROARK_INTEGRATION_ID`` environment variable when not passed
+                (an empty string is treated the same as ``None``, so it also
+                falls through to the env var). A ``ValueError`` is raised if
+                neither is set. Shipped as ``roarkIntegrationId`` on every call
+                so Roark can attribute the call to the right integration.
 
         Raises:
             ValueError: if no ``roark_integration_id`` is given and the

@@ -337,6 +337,7 @@ Usually this means the STT service isn't emitting finalized
 | `agent_prompt` | `str \| None` | `None` | System prompt. Persisted as the agent's prompt revision. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override — pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
 | `pipecat_call_id` | `str \| None` | random UUID | Stable call identifier. Pass the same value to `PipelineTask(conversation_id=...)` when OTel tracing is enabled — see [Correlating with OpenTelemetry tracing](#correlating-with-opentelemetry-tracing). |
+| `roark_integration_id` | `str \| None` | `None` | **Required.** Roark integration this deployment belongs to. Copy from the Roark dashboard when you create a Pipecat integration. Defaults to the `ROARK_INTEGRATION_ID` env var; the constructor arg takes precedence. Raises `ValueError` at startup if neither is set. |
 
 ---
 
