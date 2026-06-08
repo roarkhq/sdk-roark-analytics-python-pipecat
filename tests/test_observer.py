@@ -153,6 +153,71 @@ async def test_on_pipeline_started_posts_call_started_with_required_fields() -> 
 
 
 @pytest.mark.asyncio
+async def test_roark_integration_id_from_constructor_on_both_payloads() -> None:
+    obs = RoarkObserver(
+        api_key="rk_test", agent_id="agent-1", roark_integration_id="int_abc123"
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.started[0]["roarkIntegrationId"] == "int_abc123"
+    assert fake.ended[0]["roarkIntegrationId"] == "int_abc123"
+
+
+@pytest.mark.asyncio
+async def test_roark_integration_id_from_env_on_both_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROARK_INTEGRATION_ID", "int_from_env")
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.started[0]["roarkIntegrationId"] == "int_from_env"
+    assert fake.ended[0]["roarkIntegrationId"] == "int_from_env"
+
+
+@pytest.mark.asyncio
+async def test_constructor_roark_integration_id_overrides_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROARK_INTEGRATION_ID", "int_from_env")
+    obs = RoarkObserver(
+        api_key="rk_test", agent_id="agent-1", roark_integration_id="int_explicit"
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.started[0]["roarkIntegrationId"] == "int_explicit"
+    assert fake.ended[0]["roarkIntegrationId"] == "int_explicit"
+
+
+@pytest.mark.asyncio
+async def test_roark_integration_id_absent_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ROARK_INTEGRATION_ID", raising=False)
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert "roarkIntegrationId" not in fake.started[0]
+    assert "roarkIntegrationId" not in fake.ended[0]
+
+
+@pytest.mark.asyncio
 async def test_multiple_on_pipeline_started_calls_only_post_once() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()

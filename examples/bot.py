@@ -107,6 +107,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         # Tie the Roark record to the platform-provided session id so you can
         # correlate Roark calls with Pipecat Cloud / Daily session logs.
         pipecat_call_id=getattr(runner_args, "session_id", None),
+        # Which Roark Pipecat integration this deployment belongs to (from the
+        # Roark dashboard). Optional — omit to fall back to the project's
+        # self-hosted integration.
+        roark_integration_id=os.environ.get("ROARK_INTEGRATION_ID"),
     )
 
     pipeline = Pipeline(

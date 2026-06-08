@@ -65,6 +65,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, cast
@@ -194,6 +195,7 @@ class RoarkObserver(BaseObserver):
         agent_prompt: str | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
+        roark_integration_id: str | None = None,
     ) -> None:
         """Construct a ``RoarkObserver`` for a single Pipecat call.
 
@@ -217,6 +219,12 @@ class RoarkObserver(BaseObserver):
                 the same value to ``PipelineTask(conversation_id=...)`` when
                 OpenTelemetry tracing is enabled so each Roark call can be
                 looked up by ``conversation.id`` in your tracing backend.
+            roark_integration_id: The Roark integration this deployment
+                belongs to, copied from the Roark dashboard when you create a
+                Pipecat integration. Optional — defaults to the
+                ``ROARK_INTEGRATION_ID`` environment variable, and when neither
+                is set nothing is sent and Roark falls back to the project's
+                self-hosted integration.
         """
         super().__init__()
 
@@ -226,6 +234,7 @@ class RoarkObserver(BaseObserver):
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
+        self._roark_integration_id = roark_integration_id or os.environ.get("ROARK_INTEGRATION_ID")
 
         self._transcript: list[TranscriptMessage] = []
         self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
@@ -518,8 +527,15 @@ class RoarkObserver(BaseObserver):
             payload["agentName"] = self._agent_name
         if self._agent_prompt:
             payload["agentPrompt"] = self._agent_prompt
+        if self._roark_integration_id:
+            payload["roarkIntegrationId"] = self._roark_integration_id
 
-        log.info("call-started: pipecatCallId=%s agentId=%s", self._pipecat_call_id, self._agent_id)
+        log.info(
+            "call-started: pipecatCallId=%s agentId=%s roarkIntegrationId=%s",
+            self._pipecat_call_id,
+            self._agent_id,
+            self._roark_integration_id,
+        )
         await self._client.post_call_started(payload)
 
     # ------------------------------------------------------------------ timing
@@ -631,14 +647,18 @@ class RoarkObserver(BaseObserver):
             )
         if self._tool_calls:
             payload["toolCalls"] = list(self._tool_calls)
+        if self._roark_integration_id:
+            payload["roarkIntegrationId"] = self._roark_integration_id
 
         log.info(
-            "call-ended: pipecatCallId=%s reason=%s transcript=%d toolCalls=%d chunks=%d",
+            "call-ended: pipecatCallId=%s reason=%s transcript=%d toolCalls=%d chunks=%d "
+            "roarkIntegrationId=%s",
             self._pipecat_call_id,
             reason,
             len(self._transcript),
             len(self._tool_calls),
             self._chunk_index,
+            self._roark_integration_id,
         )
         await self._client.post_call_ended(payload)
         await self._client.aclose()

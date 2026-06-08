@@ -56,6 +56,7 @@ class CallStartedPayload(TypedDict, total=False):
     agentId: str
     agentName: str
     agentPrompt: str
+    roarkIntegrationId: str  # Roark integration id; omitted falls back to self-hosted
 
 
 class CallEndedPayload(TypedDict, total=False):
@@ -78,6 +79,7 @@ class CallEndedPayload(TypedDict, total=False):
     recordingNumChannels: int
     transcript: list[TranscriptMessage]
     toolCalls: list[ToolCallMessage | ToolResultMessage]
+    roarkIntegrationId: str  # Roark integration id; omitted falls back to self-hosted
 
 
 class ChunkUploadUrlResponse(TypedDict, total=False):

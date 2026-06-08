@@ -6,6 +6,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Optional `roark_integration_id`** to attribute each call to a specific Roark
+  Pipecat integration. Pass it to `RoarkObserver(roark_integration_id=...)` or
+  set the `ROARK_INTEGRATION_ID` environment variable (the constructor arg wins);
+  copy the id from the Roark dashboard when you create a Pipecat integration. When
+  set, it ships as `roarkIntegrationId` on both the `call-started` and
+  `call-ended` webhook bodies. Fully backward compatible — when unset the field is
+  omitted and Roark falls back to the project's self-hosted integration.
+
 ## [0.1.4] - 2026-05-28
 
 ### Added
