@@ -39,7 +39,22 @@ stereo audio recording. No other code changes required.
 pip install pipecat-roark
 ```
 
-### 2. Configure
+### 2. Create a Pipecat integration & API key
+
+Every Roark API key is **bound to a specific integration** — the key only
+works for the integration it was created under. Before you can send calls from
+this package, create the integration first:
+
+1. In the [Roark dashboard](https://app.roark.ai), go to **Integrations** and
+   create a new **Pipecat** integration.
+2. Open that integration and generate an **API key** for it.
+3. Copy the key (it looks like `rk_live_...`) — this is the value you'll set as
+   `ROARK_API_KEY` below.
+
+> Use the key created **under the Pipecat integration**. A key from a different
+> integration (or an account-level key not bound to one) will be rejected.
+
+### 3. Configure
 
 Set one env var:
 
@@ -50,7 +65,7 @@ ROARK_API_KEY=rk_live_...
 > The Roark API key is all you configure — the observer knows its own service
 > endpoints. `ROARK_API_KEY` can also be passed as `api_key=` to `RoarkObserver`.
 
-### 3. Wire the observer
+### 4. Wire the observer
 
 Drop `RoarkObserver` into your pipeline's `observers=[...]` list. Splice the
 auto-created `roark.audio_processor` **after `transport.output()`** so it sees
@@ -125,6 +140,11 @@ whether your Pipecat agent runs as a self-hosted process or is deployed to
 entry point with Pipecat's
 [`create_transport`](https://docs.pipecat.ai/server/utilities/runner) helper,
 and the same file runs in both modes — see `examples/bot.py`.
+
+> **Both modes use the same `ROARK_API_KEY`** — the key created under your
+> Pipecat integration (see [Create a Pipecat integration & API key](#2-create-a-pipecat-integration--api-key)).
+> Only where the key is *stored* differs: a local `.env` / secrets manager
+> self-hosted, deployment secrets on Pipecat Cloud.
 
 | | Self-hosted | Pipecat Cloud |
 |---|---|---|
