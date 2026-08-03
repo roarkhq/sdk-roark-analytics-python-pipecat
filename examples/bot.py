@@ -65,7 +65,11 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 
-from pipecat_roark import RoarkObserver
+from pipecat_roark import (
+    RoarkObserver,
+    resolve_pipecat_call_id,
+    resolve_roark_simulation_job_id,
+)
 
 load_dotenv(override=True)
 
@@ -104,9 +108,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         agent_id="pipecat-roark-foundational",
         agent_name="Pipecat-Roark Foundational Example",
         agent_prompt=SYSTEM_PROMPT,
-        # Tie the Roark record to the platform-provided session id so you can
-        # correlate Roark calls with Pipecat Cloud / Daily session logs.
-        pipecat_call_id=getattr(runner_args, "session_id", None),
+        # Keep Pipecat's native call ID separate from Roark simulation metadata.
+        pipecat_call_id=resolve_pipecat_call_id(runner_args),
+        simulation_job_id=resolve_roark_simulation_job_id(runner_args),
     )
 
     pipeline = Pipeline(

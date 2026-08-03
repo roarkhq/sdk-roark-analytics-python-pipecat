@@ -30,6 +30,7 @@ See https://docs.roark.ai/integrations/pipecat for the full setup guide.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from ._call_id import resolve_pipecat_call_id, resolve_roark_simulation_job_id
 from .observer import RoarkObserver
 
 try:
@@ -40,4 +41,8 @@ try:
 except PackageNotFoundError:  # pragma: no cover — running from a source tree
     __version__ = "0.0.0+unknown"
 
-__all__ = ["RoarkObserver"]
+__all__ = [
+    "RoarkObserver",
+    "resolve_pipecat_call_id",
+    "resolve_roark_simulation_job_id",
+]

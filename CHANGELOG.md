@@ -6,6 +6,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Added `resolve_pipecat_call_id(runner_args)` to retain Pipecat Cloud session
+  IDs or SmallWebRTC peer-connection IDs, with a UUID fallback for other
+  runner types.
+- Added `resolve_roark_simulation_job_id(runner_args)` and the optional
+  `RoarkObserver(simulation_job_id=...)` argument. The reserved
+  `body["_roark"]["simulationJobId"]` value is forwarded independently on
+  `call-started` and `call-ended` events without replacing the Pipecat call ID.
+
 ## [0.1.4] - 2026-05-28
 
 ### Added

@@ -194,6 +194,7 @@ class RoarkObserver(BaseObserver):
         agent_prompt: str | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
+        simulation_job_id: str | None = None,
     ) -> None:
         """Construct a ``RoarkObserver`` for a single Pipecat call.
 
@@ -216,7 +217,14 @@ class RoarkObserver(BaseObserver):
                 as ``pipecatCallId``. Generated internally if omitted. Pass
                 the same value to ``PipelineTask(conversation_id=...)`` when
                 OpenTelemetry tracing is enabled so each Roark call can be
-                looked up by ``conversation.id`` in your tracing backend.
+                looked up by ``conversation.id`` in your tracing backend. Use
+                ``resolve_pipecat_call_id(runner_args)`` to reuse a supported
+                native transport/session ID.
+            simulation_job_id: Optional Roark simulation job identifier. This
+                remains separate from ``pipecat_call_id`` and is carried as
+                ``simulationJobId`` on call lifecycle events. Use
+                ``resolve_roark_simulation_job_id(runner_args)`` to read the
+                reserved runner-body value supplied by Roark simulations.
         """
         super().__init__()
 
@@ -226,6 +234,7 @@ class RoarkObserver(BaseObserver):
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
         self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
+        self._simulation_job_id = simulation_job_id
 
         self._transcript: list[TranscriptMessage] = []
         self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
@@ -518,6 +527,8 @@ class RoarkObserver(BaseObserver):
             payload["agentName"] = self._agent_name
         if self._agent_prompt:
             payload["agentPrompt"] = self._agent_prompt
+        if self._simulation_job_id is not None:
+            payload["simulationJobId"] = self._simulation_job_id
 
         log.info("call-started: pipecatCallId=%s agentId=%s", self._pipecat_call_id, self._agent_id)
         await self._client.post_call_started(payload)
@@ -616,6 +627,8 @@ class RoarkObserver(BaseObserver):
             "callEndedAt": ended_iso,
             "callEndedReason": reason,
         }
+        if self._simulation_job_id is not None:
+            payload["simulationJobId"] = self._simulation_job_id
         if self._first_speaker is not None:
             payload["agentSpokeFirst"] = self._first_speaker == "assistant"
         if self._chunk_index > 0:

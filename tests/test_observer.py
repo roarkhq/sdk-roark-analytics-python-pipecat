@@ -149,7 +149,42 @@ async def test_on_pipeline_started_posts_call_started_with_required_fields() -> 
     assert "interfaceType" not in payload
     assert "callDirection" not in payload
     assert "pipecatCallId" in payload
+    assert "simulationJobId" not in payload
     assert "eventTimestamp" in payload
+
+
+@pytest.mark.asyncio
+async def test_explicit_pipecat_call_id_is_preserved() -> None:
+    obs = RoarkObserver(
+        api_key="rk_test",
+        agent_id="agent-1",
+        pipecat_call_id="transport-call-id",
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.aflush()
+
+    assert fake.started[0]["pipecatCallId"] == "transport-call-id"
+    assert fake.ended[0]["pipecatCallId"] == "transport-call-id"
+
+
+@pytest.mark.asyncio
+async def test_explicit_simulation_job_id_is_preserved_on_lifecycle_payloads() -> None:
+    obs = RoarkObserver(
+        api_key="rk_test",
+        agent_id="agent-1",
+        simulation_job_id="simulation-job-id",
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await obs.aflush()
+
+    assert fake.started[0]["simulationJobId"] == "simulation-job-id"
+    assert fake.ended[0]["simulationJobId"] == "simulation-job-id"
 
 
 @pytest.mark.asyncio
@@ -732,5 +767,3 @@ async def test_call_ended_without_audio_omits_recording_fields() -> None:
     ended = fake.ended[0]
     assert "recordingSampleRate" not in ended
     assert "recordingNumChannels" not in ended
-
-
