@@ -17,8 +17,9 @@ Example::
         params=PipelineParams(
             observers=[
                 RoarkObserver(
-                    api_key="rk_...",
+                    api_key="rk_live_replace_me",
                     agent_id="support-bot-v3",
+                    runner_args=runner_args,
                     audio_buffer_processor=audio_buffer,
                 ),
             ],

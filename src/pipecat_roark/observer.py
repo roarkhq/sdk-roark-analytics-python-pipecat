@@ -65,12 +65,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
+import warnings
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, cast
 
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
+from ._call_id import _resolve_pipecat_call_id
 from ._types import (
     CallEndedPayload,
     CallStartedPayload,
@@ -161,9 +162,7 @@ def _make_self_recording_audio_buffer_processor(
             if isinstance(frame, StartFrame) and not self._recording:
                 await self.start_recording()
 
-    return _SelfRecordingAudioBufferProcessor(
-        num_channels=num_channels, buffer_size=buffer_size
-    )
+    return _SelfRecordingAudioBufferProcessor(num_channels=num_channels, buffer_size=buffer_size)
 
 
 class RoarkObserver(BaseObserver):
@@ -190,6 +189,7 @@ class RoarkObserver(BaseObserver):
         *,
         api_key: str,
         agent_id: str,
+        runner_args: object,
         agent_name: str | None = None,
         agent_prompt: str | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
@@ -202,6 +202,10 @@ class RoarkObserver(BaseObserver):
                 webhook and chunk-upload endpoints.
             agent_id: Customer-stable agent identifier. Roark lazy-registers
                 the agent the first time it sees a given ``agent_id``.
+            runner_args: Arguments passed to the Pipecat ``bot`` entry point.
+                The observer uses ``webrtc_connection.pc_id`` for
+                SmallWebRTC, then ``session_id`` for Pipecat Cloud. Other
+                runner types receive an observer-local UUID.
             agent_name: Display name for the agent on the Roark dashboard.
             agent_prompt: System prompt for the agent. Persisted as the
                 agent's prompt revision so prompt changes are tracked over
@@ -212,20 +216,27 @@ class RoarkObserver(BaseObserver):
                 sample rate adopted from the pipeline's ``StartFrame``)
                 exposed as ``self.audio_processor`` for the caller to splice
                 into the pipeline after ``transport.output()``.
-            pipecat_call_id: Stable call identifier carried on Roark records
-                as ``pipecatCallId``. Generated internally if omitted. Pass
-                the same value to ``PipelineTask(conversation_id=...)`` when
-                OpenTelemetry tracing is enabled so each Roark call can be
-                looked up by ``conversation.id`` in your tracing backend.
+            pipecat_call_id: Deprecated compatibility keyword. Its value is
+                ignored because call identity is derived from ``runner_args``.
+                This keyword will be removed in version 0.3.0.
         """
         super().__init__()
+
+        if pipecat_call_id is not None:
+            warnings.warn(
+                "pipecat_call_id is deprecated, ignored, and will be removed in "
+                "pipecat-roark 0.3.0; pass runner_args and read "
+                "observer.pipecat_call_id instead",
+                FutureWarning,
+                stacklevel=2,
+            )
 
         self._client = RoarkClient(api_key=api_key)
 
         self._agent_id = agent_id
         self._agent_name = agent_name
         self._agent_prompt = agent_prompt
-        self._pipecat_call_id = pipecat_call_id or str(uuid.uuid4())
+        self._pipecat_call_id = _resolve_pipecat_call_id(runner_args)
 
         self._transcript: list[TranscriptMessage] = []
         self._tool_calls: list[ToolCallMessage | ToolResultMessage] = []
@@ -320,6 +331,15 @@ class RoarkObserver(BaseObserver):
         # exactly once — otherwise turns repeat ("Hello!Hello!Hello!").
         self._seen_frame_ids: set[int] = set()
 
+    @property
+    def pipecat_call_id(self) -> str:
+        """Resolved call identifier used in Roark lifecycle events.
+
+        This read-only value can also be supplied as
+        ``PipelineTask(conversation_id=...)`` for OpenTelemetry correlation.
+        """
+        return self._pipecat_call_id
+
     # ------------------------------------------------------------------ lifecycle
 
     async def on_pipeline_started(self) -> None:  # type: ignore[override]
@@ -345,9 +365,7 @@ class RoarkObserver(BaseObserver):
         # is already recording here and is likewise left untouched. The
         # ``_recording`` read is best-effort: if a future Pipecat renames it,
         # ``getattr`` falls back to re-arming (the prior behaviour).
-        if not self._auto_arm_recording and not getattr(
-            self.audio_processor, "_recording", False
-        ):
+        if not self._auto_arm_recording and not getattr(self.audio_processor, "_recording", False):
             try:
                 await self.audio_processor.start_recording()
             except Exception as err:  # pragma: no cover — defensive
@@ -817,9 +835,7 @@ class RoarkObserver(BaseObserver):
                     "kind": "tool_call",
                     "toolCallId": str(getattr(frame, "tool_call_id", "") or ""),
                     "name": str(getattr(frame, "function_name", "") or ""),
-                    "arguments": _arguments_to_json_string(
-                        getattr(frame, "arguments", None)
-                    ),
+                    "arguments": _arguments_to_json_string(getattr(frame, "arguments", None)),
                     "timestamp": _utc_now_iso(),
                 },
             )
