@@ -187,7 +187,7 @@ def test_runner_args_is_required() -> None:
 
 
 def test_deprecated_pipecat_call_id_is_ignored_with_visible_warning() -> None:
-    with pytest.warns(FutureWarning, match="ignored.*0.2.0"):
+    with pytest.warns(FutureWarning, match="ignored.*0.3.0"):
         obs = _RoarkObserver(
             api_key="rk_test",
             agent_id="agent-1",

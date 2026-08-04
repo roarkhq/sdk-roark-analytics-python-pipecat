@@ -365,7 +365,7 @@ Usually this means the STT service isn't emitting finalized
 | `agent_name` | `str \| None` | `None` | Display name. |
 | `agent_prompt` | `str \| None` | `None` | System prompt. Persisted as the agent's prompt revision. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override — pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
-| `pipecat_call_id` | `str \| None` | `None` | **Deprecated and ignored.** Accepted during the 0.1.x migration window and removed in 0.2.0. Pass `runner_args` instead. |
+| `pipecat_call_id` | `str \| None` | `None` | **Deprecated and ignored.** Accepted for compatibility and scheduled for removal in 0.3.0. Pass `runner_args` instead. |
 
 `observer.pipecat_call_id` is the read-only resolved call ID. Use it as
 `PipelineTask(conversation_id=...)` when OpenTelemetry tracing is enabled.

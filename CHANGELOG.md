@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-04
+
 ### Changed
 
 - `RoarkObserver` now requires the `runner_args` received by the Pipecat bot
@@ -15,8 +17,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The resolved call ID is exposed through the read-only
   `observer.pipecat_call_id` property for OpenTelemetry correlation.
 - The `pipecat_call_id` constructor keyword is deprecated, ignored, and emits
-  a visible `FutureWarning`. It remains accepted during the 0.1.x migration
-  window and will be removed in 0.2.0.
+  a visible `FutureWarning`. It remains accepted for compatibility and will be
+  removed in 0.3.0.
 - The minimum supported `pipecat-ai` version is now 0.0.104, the first release
   that dispatches the observer lifecycle hook used to post `call-started`.
 
@@ -159,7 +161,8 @@ listing.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
   `pipecat_call_id`, `audio_buffer_processor` are optional.
 
-[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.1...v0.1.2

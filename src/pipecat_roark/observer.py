@@ -218,14 +218,14 @@ class RoarkObserver(BaseObserver):
                 into the pipeline after ``transport.output()``.
             pipecat_call_id: Deprecated compatibility keyword. Its value is
                 ignored because call identity is derived from ``runner_args``.
-                This keyword will be removed in version 0.2.0.
+                This keyword will be removed in version 0.3.0.
         """
         super().__init__()
 
         if pipecat_call_id is not None:
             warnings.warn(
                 "pipecat_call_id is deprecated, ignored, and will be removed in "
-                "pipecat-roark 0.2.0; pass runner_args and read "
+                "pipecat-roark 0.3.0; pass runner_args and read "
                 "observer.pipecat_call_id instead",
                 FutureWarning,
                 stacklevel=2,
