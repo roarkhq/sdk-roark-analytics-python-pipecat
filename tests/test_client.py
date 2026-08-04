@@ -46,13 +46,7 @@ async def test_post_call_started_sends_api_key_and_payload() -> None:
 
     client = _client_with_mock(handler)
     ok = await client.post_call_started(
-        {
-            "event": "call-started",
-            "pipecatCallId": "abc",
-            "simulationJobId": "simulation-job-id",
-            "eventTimestamp": "t",
-            "agentId": "a",
-        }
+        {"event": "call-started", "pipecatCallId": "abc", "eventTimestamp": "t", "agentId": "a"}
     )
     await client.aclose()
 
@@ -61,31 +55,6 @@ async def test_post_call_started_sends_api_key_and_payload() -> None:
     assert seen["api_key"] == "rk_test"
     assert seen["body"]["event"] == "call-started"
     assert seen["body"]["agentId"] == "a"
-    assert seen["body"]["simulationJobId"] == "simulation-job-id"
-
-
-@pytest.mark.asyncio
-async def test_post_call_ended_includes_simulation_job_id() -> None:
-    seen: dict[str, Any] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"ok": True})
-
-    client = _client_with_mock(handler)
-    ok = await client.post_call_ended(
-        {
-            "event": "call-ended",
-            "pipecatCallId": "abc",
-            "simulationJobId": "simulation-job-id",
-            "eventTimestamp": "t",
-            "callEndedReason": "completed",
-        }
-    )
-    await client.aclose()
-
-    assert ok is True
-    assert seen["body"]["simulationJobId"] == "simulation-job-id"
 
 
 @pytest.mark.asyncio

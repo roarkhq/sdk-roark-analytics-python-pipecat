@@ -13,7 +13,7 @@ Guidance for AI coding agents working in this repository. This file is read by t
 - Python 3.10+
 - Async-native (built on `httpx` + Pipecat's asyncio runtime)
 - Single public surface: `RoarkObserver` and `RoarkObserverConfig`
-- Tested against `pipecat-ai >= 0.0.40, < 1`
+- Tested against `pipecat-ai >= 0.0.104, < 1`
 
 ## Project structure
 

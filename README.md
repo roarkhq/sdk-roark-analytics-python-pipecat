@@ -5,7 +5,7 @@ A [Roark](https://roark.ai) analytics observer for
 pipeline — Roark captures call lifecycle, transcripts, tool calls, and a
 stereo audio recording. No other code changes required.
 
-- **Tested with** `pipecat-ai` 0.0.108 (compatible with `>= 0.0.40, < 1`)
+- **Tested with** `pipecat-ai` 0.0.108 (compatible with `>= 0.0.104, < 1`)
 - **Python** 3.10+
 - **Runtime-agnostic** — same code runs self-hosted *and* on Pipecat Cloud
 
@@ -21,7 +21,7 @@ stereo audio recording. No other code changes required.
 - [Running modes](#running-modes)
 - [Examples](#examples)
 - [Advanced](#advanced)
-  - [Correlating calls and simulations](#correlating-calls-and-simulations)
+  - [Call identity](#call-identity)
   - [Bring your own `AudioBufferProcessor`](#bring-your-own-audiobufferprocessor)
   - [Handling WebRTC disconnects](#handling-webrtc-disconnects)
   - [Correlating with OpenTelemetry tracing](#correlating-with-opentelemetry-tracing)
@@ -49,8 +49,8 @@ this package, create the integration first:
 1. In the [Roark dashboard](https://app.roark.ai), go to **Integrations** and
    create a new **Pipecat** integration.
 2. Open that integration and generate an **API key** for it.
-3. Copy the key (it looks like `rk_live_...`) — this is the value you'll set as
-   `ROARK_API_KEY` below.
+3. Copy the key (represented as `rk_live_replace_me` below) — this is the
+   value you'll set as `ROARK_API_KEY` below.
 
 > Use the key created **under the Pipecat integration**. A key from a different
 > integration (or an account-level key not bound to one) will be rejected.
@@ -60,7 +60,7 @@ this package, create the integration first:
 Set one env var:
 
 ```bash
-ROARK_API_KEY=rk_live_...
+ROARK_API_KEY=rk_live_replace_me
 ```
 
 > The Roark API key is all you configure — the observer knows its own service
@@ -68,9 +68,10 @@ ROARK_API_KEY=rk_live_...
 
 ### 4. Wire the observer
 
-Drop `RoarkObserver` into your pipeline's `observers=[...]` list. Splice the
-auto-created `roark.audio_processor` **after `transport.output()`** so it sees
-the bot's audio post-TTS:
+Inside your Pipecat `bot(runner_args)` entry point, drop `RoarkObserver` into
+the pipeline's `observers=[...]` list. Splice the auto-created
+`roark.audio_processor` **after `transport.output()`** so it sees the bot's
+audio post-TTS:
 
 ```python
 from pipecat.pipeline.pipeline import Pipeline
@@ -78,8 +79,9 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat_roark import RoarkObserver
 
 roark = RoarkObserver(
-    api_key="rk_live_...",
+    api_key="rk_live_replace_me",
     agent_id="support-bot-v3",
+    runner_args=runner_args,
     agent_name="Support Bot v3",
     agent_prompt=SYSTEM_PROMPT,
 )
@@ -170,7 +172,7 @@ Set the same vars as deployment secrets, then deploy:
 
 ```bash
 pcc secrets set roark-secrets \
-    ROARK_API_KEY=rk_live_...
+    ROARK_API_KEY=rk_live_replace_me
 
 pcc deploy
 pcc agent start <agent-name>
@@ -213,60 +215,23 @@ uv run python examples/bot.py --transport daily
 
 ## Advanced
 
-### Correlating calls and simulations
+### Call identity
 
-Pipecat call identity and Roark simulation identity are separate values. Inside
-`bot(runner_args)`, resolve both once and pass them to the observer:
+Pass the `runner_args` received by your Pipecat `bot` entry point directly to
+the observer. It resolves one call ID internally, in this order:
 
-- `resolve_pipecat_call_id()` retains Pipecat's native ID when one is
-  available: Pipecat Cloud `session_id`, then SmallWebRTC
-  `webrtc_connection.pc_id`, then a random UUID.
-- `resolve_roark_simulation_job_id()` reads the optional Roark simulation job
-  ID from `runner_args.body["_roark"]["simulationJobId"]`.
+1. SmallWebRTC `runner_args.webrtc_connection.pc_id`.
+2. Pipecat Cloud `runner_args.session_id`.
+3. A random UUID, generated once for this observer.
 
-```python
-from pipecat_roark import (
-    RoarkObserver,
-    resolve_pipecat_call_id,
-    resolve_roark_simulation_job_id,
-)
+The native SmallWebRTC and Pipecat Cloud identifiers let Roark correlate both
+sides of a supported simulation automatically. Other runner and transport
+types still ingest normally, but their UUID fallback is local to the observer
+and does not provide native-ID simulation merging.
 
-call_id = resolve_pipecat_call_id(runner_args)
-simulation_job_id = resolve_roark_simulation_job_id(runner_args)
-
-roark = RoarkObserver(
-    api_key="rk_live_...",
-    agent_id="support-bot-v3",
-    pipecat_call_id=call_id,
-    simulation_job_id=simulation_job_id,
-)
-```
-
-When Roark initiates a simulation, it supplies the simulation metadata in a
-reserved runner-body envelope:
-
-```json
-{
-  "body": {
-    "_roark": {
-      "simulationJobId": "8df59c4d-37e0-4b7a-a0ea-a09eb88b22b4"
-    }
-  }
-}
-```
-
-Pipecat forwards the inner `body` value as `runner_args.body`. The observer
-sends `simulationJobId` on both `call-started` and `call-ended`, allowing Roark
-to associate the imported call with its simulation without replacing the
-Pipecat-native `pipecatCallId`. If no simulation metadata is present, the field
-is simply omitted.
-
-`_roark` is a reserved namespace. Preserve any existing application fields in
-`body`, but do not populate or overwrite `_roark` from untrusted end-user data.
-
-Explicitly supplied `pipecat_call_id` and `simulation_job_id` values remain
-caller-controlled. The observer forwards them unchanged and does not resolve
-or replace them internally.
+The resolved value is available through the read-only
+`observer.pipecat_call_id` property. Applications do not need to generate or
+forward an identifier themselves.
 
 ### Bring your own `AudioBufferProcessor`
 
@@ -281,8 +246,9 @@ audio_buffer = AudioBufferProcessor(sample_rate=16000, num_channels=1, buffer_si
 pipeline = Pipeline([..., transport.output(), audio_buffer, ...])
 
 RoarkObserver(
-    api_key="rk_live_...",
+    api_key="rk_live_replace_me",
     agent_id="support-bot-v3",
+    runner_args=runner_args,
     audio_buffer_processor=audio_buffer,
 )
 ```
@@ -304,28 +270,25 @@ async def _on_disconnect(_, __):
 ### Correlating with OpenTelemetry tracing
 
 If you also enable Pipecat's OpenTelemetry tracing
-(`PipelineTask(enable_tracing=True)`), resolve **one** call ID up front and
-pass it to both sides — the observer's `pipecat_call_id` and `PipelineTask`'s
-`conversation_id` — so each Roark call can be looked up by the same value in
-your tracing backend:
+(`PipelineTask(enable_tracing=True)`), use the observer's resolved, read-only
+call ID as `PipelineTask.conversation_id`. Each Roark call can then be looked
+up by the same value in your tracing backend:
 
 ```python
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat_roark import RoarkObserver, resolve_pipecat_call_id
-
-call_id = resolve_pipecat_call_id(runner_args)
+from pipecat_roark import RoarkObserver
 
 roark = RoarkObserver(
-    api_key="rk_live_...",
+    api_key="rk_live_replace_me",
     agent_id="support-bot-v3",
-    pipecat_call_id=call_id,   # appears on the Roark record as `pipecatCallId`
+    runner_args=runner_args,
 )
 
 task = PipelineTask(
     pipeline,
     params=PipelineParams(observers=[roark]),
     enable_tracing=True,
-    conversation_id=call_id,   # set as the `conversation.id` span attribute by Pipecat
+    conversation_id=roark.pipecat_call_id,
 )
 ```
 
@@ -337,9 +300,8 @@ backend by `conversation.id = <pipecatCallId>` (e.g., Honeycomb:
 `where conversation.id = "..."`, Jaeger: tag filter, Datadog:
 `@conversation.id:...`).
 
-> If you omit `pipecat_call_id`, the observer generates one internally — fine
-> for standalone use, but you won't be able to link a Roark call to its trace.
-> With OTel enabled, **always pass the same value to both**.
+Because `roark.pipecat_call_id` is read-only, the lifecycle payload and tracing
+attribute cannot drift after observer construction.
 
 ---
 
@@ -399,11 +361,14 @@ Usually this means the STT service isn't emitting finalized
 |-----------|------|---------|-------|
 | `api_key` | `str` | — | **Required.** Roark API key. |
 | `agent_id` | `str` | — | **Required.** Customer-stable agent identifier. |
+| `runner_args` | `object` | — | **Required.** The arguments passed to your Pipecat `bot` entry point. Used to resolve a native SmallWebRTC or Pipecat Cloud identifier when available. |
 | `agent_name` | `str \| None` | `None` | Display name. |
 | `agent_prompt` | `str \| None` | `None` | System prompt. Persisted as the agent's prompt revision. |
 | `audio_buffer_processor` | `AudioBufferProcessor \| None` | `None` | Power-user override — pass your own `AudioBufferProcessor` to control sample rate / channels / buffer size. If omitted, the observer creates a default (stereo, ~256 KB chunks; sample rate adopted from the pipeline's `StartFrame`) accessible via `observer.audio_processor`. |
-| `pipecat_call_id` | `str \| None` | random UUID | Stable Pipecat call identifier. Use `resolve_pipecat_call_id(runner_args)` to retain a Pipecat Cloud session ID or SmallWebRTC peer ID, or pass your own. Pass the same value to `PipelineTask(conversation_id=...)` when OTel tracing is enabled — see [Correlating with OpenTelemetry tracing](#correlating-with-opentelemetry-tracing). |
-| `simulation_job_id` | `str \| None` | `None` | Optional Roark simulation job identifier sent on call lifecycle events. Use `resolve_roark_simulation_job_id(runner_args)` to read the reserved `_roark.simulationJobId` runner-body value. |
+| `pipecat_call_id` | `str \| None` | `None` | **Deprecated and ignored.** Accepted during the 0.1.x migration window and removed in 0.2.0. Pass `runner_args` instead. |
+
+`observer.pipecat_call_id` is the read-only resolved call ID. Use it as
+`PipelineTask(conversation_id=...)` when OpenTelemetry tracing is enabled.
 
 ---
 

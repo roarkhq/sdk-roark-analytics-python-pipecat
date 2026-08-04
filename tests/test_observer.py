@@ -10,6 +10,8 @@ pipeline and the observer only subscribes to its event.
 from __future__ import annotations
 
 import json
+from functools import partial
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,7 +37,9 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.observers.base_observer import FramePushed  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
-from pipecat_roark.observer import RoarkObserver  # noqa: E402
+from pipecat_roark.observer import RoarkObserver as _RoarkObserver  # noqa: E402
+
+RoarkObserver = partial(_RoarkObserver, runner_args=SimpleNamespace())
 
 
 def _user_frame(text: str, *, user_id: str = "user", timestamp: str = "t") -> TranscriptionFrame:
@@ -149,42 +153,49 @@ async def test_on_pipeline_started_posts_call_started_with_required_fields() -> 
     assert "interfaceType" not in payload
     assert "callDirection" not in payload
     assert "pipecatCallId" in payload
-    assert "simulationJobId" not in payload
     assert "eventTimestamp" in payload
 
 
 @pytest.mark.asyncio
-async def test_explicit_pipecat_call_id_is_preserved() -> None:
-    obs = RoarkObserver(
+async def test_native_call_id_is_exposed_read_only_and_used_in_lifecycle_payloads() -> None:
+    runner_args = SimpleNamespace(
+        session_id="cloud-session-id",
+        webrtc_connection=SimpleNamespace(pc_id="small-webrtc-connection-id"),
+    )
+    obs = _RoarkObserver(
         api_key="rk_test",
         agent_id="agent-1",
-        pipecat_call_id="transport-call-id",
+        runner_args=runner_args,
     )
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
 
-    await obs.on_pipeline_started()
-    await obs.aflush()
-
-    assert fake.started[0]["pipecatCallId"] == "transport-call-id"
-    assert fake.ended[0]["pipecatCallId"] == "transport-call-id"
-
-
-@pytest.mark.asyncio
-async def test_explicit_simulation_job_id_is_preserved_on_lifecycle_payloads() -> None:
-    obs = RoarkObserver(
-        api_key="rk_test",
-        agent_id="agent-1",
-        simulation_job_id="simulation-job-id",
-    )
-    fake = _FakeClient()
-    obs._client = fake  # type: ignore[assignment]
+    assert obs.pipecat_call_id == "small-webrtc-connection-id"
+    with pytest.raises(AttributeError):
+        obs.pipecat_call_id = "replacement"  # type: ignore[misc]
 
     await obs.on_pipeline_started()
     await obs.aflush()
 
-    assert fake.started[0]["simulationJobId"] == "simulation-job-id"
-    assert fake.ended[0]["simulationJobId"] == "simulation-job-id"
+    assert fake.started[0]["pipecatCallId"] == obs.pipecat_call_id
+    assert fake.ended[0]["pipecatCallId"] == obs.pipecat_call_id
+
+
+def test_runner_args_is_required() -> None:
+    with pytest.raises(TypeError, match="runner_args"):
+        _RoarkObserver(api_key="rk_test", agent_id="agent-1")  # type: ignore[call-arg]
+
+
+def test_deprecated_pipecat_call_id_is_ignored_with_visible_warning() -> None:
+    with pytest.warns(FutureWarning, match="ignored.*0.2.0"):
+        obs = _RoarkObserver(
+            api_key="rk_test",
+            agent_id="agent-1",
+            runner_args=SimpleNamespace(session_id="native-session-id"),
+            pipecat_call_id="caller-selected-id",
+        )
+
+    assert obs.pipecat_call_id == "native-session-id"
 
 
 @pytest.mark.asyncio
@@ -255,9 +266,7 @@ async def test_user_turn_anchored_to_speech_onset_with_audio_offset() -> None:
     # First audio frame anchors the offset clock (WAV sample 0).
     await obs.on_push_frame(_push(_audio_in()))
     await obs.on_push_frame(_push(UserStartedSpeakingFrame()))
-    await obs.on_push_frame(
-        _push(_user_frame("hello", timestamp="2026-05-18T12:00:00+00:00"))
-    )
+    await obs.on_push_frame(_push(_user_frame("hello", timestamp="2026-05-18T12:00:00+00:00")))
     await obs.on_push_frame(_push(EndFrame()))
 
     user_turn = fake.ended[0]["transcript"][0]

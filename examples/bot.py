@@ -29,7 +29,7 @@ Env vars (see ``.env.example``):
 For Pipecat Cloud, set them as deployment secrets instead of a ``.env`` file::
 
     pcc secrets set roark-secrets \\
-        ROARK_API_KEY=rk_live_... \\
+        ROARK_API_KEY=rk_live_replace_me \\
         DEEPGRAM_API_KEY=... \\
         OPENAI_API_KEY=... \\
         CARTESIA_API_KEY=...
@@ -65,11 +65,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 
-from pipecat_roark import (
-    RoarkObserver,
-    resolve_pipecat_call_id,
-    resolve_roark_simulation_job_id,
-)
+from pipecat_roark import RoarkObserver
 
 load_dotenv(override=True)
 
@@ -106,11 +102,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     roark = RoarkObserver(
         api_key=os.environ["ROARK_API_KEY"],
         agent_id="pipecat-roark-foundational",
+        runner_args=runner_args,
         agent_name="Pipecat-Roark Foundational Example",
         agent_prompt=SYSTEM_PROMPT,
-        # Keep Pipecat's native call ID separate from Roark simulation metadata.
-        pipecat_call_id=resolve_pipecat_call_id(runner_args),
-        simulation_job_id=resolve_roark_simulation_job_id(runner_args),
     )
 
     pipeline = Pipeline(

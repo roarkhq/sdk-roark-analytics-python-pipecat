@@ -37,9 +37,9 @@ class RoarkClient:
         """Initialise the client.
 
         Args:
-            api_key: Roark API key (e.g. ``rk_live_...``). Sent on every Roark
-                request as ``x-roark-api-key`` *and* ``Authorization: Bearer``
-                so both the webhook and the customer-api router accept it.
+            api_key: Roark API key (e.g. ``rk_live_replace_me``). Sent on every
+                Roark request as ``x-roark-api-key`` *and* ``Authorization:
+                Bearer`` so the ingestion endpoints can authenticate it.
         """
         self._api_key = api_key
         self._webhook_url: str = WEBHOOK_URL

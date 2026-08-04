@@ -51,7 +51,6 @@ class CallStartedPayload(TypedDict, total=False):
 
     event: Literal["call-started"]
     pipecatCallId: str
-    simulationJobId: str
     eventTimestamp: str  # ISO 8601 UTC
 
     agentId: str
@@ -69,7 +68,6 @@ class CallEndedPayload(TypedDict, total=False):
 
     event: Literal["call-ended"]
     pipecatCallId: str
-    simulationJobId: str
     eventTimestamp: str  # ISO 8601 UTC
 
     callStartedAt: str | None
