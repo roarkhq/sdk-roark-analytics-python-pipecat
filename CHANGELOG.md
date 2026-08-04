@@ -6,8 +6,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-## [0.1.5] - 2026-08-04
-
 ### Changed
 
 - `RoarkObserver` now requires the `runner_args` received by the Pipecat bot
@@ -161,8 +159,7 @@ listing.
 - `api_key`, `agent_id` are required; `agent_name`, `agent_prompt`,
   `pipecat_call_id`, `audio_buffer_processor` are optional.
 
-[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.5...HEAD
-[0.1.5]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.4...v0.1.5
+[Unreleased]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.4...HEAD
 [0.1.4]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/roarkhq/sdk-roark-analytics-python-pipecat/compare/v0.1.1...v0.1.2
