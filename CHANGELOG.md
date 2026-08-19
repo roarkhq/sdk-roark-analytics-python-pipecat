@@ -6,6 +6,24 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-19
+
+### Changed
+
+- Widened the `pipecat-ai` requirement from `>=0.0.104,<1` to `>=0.0.104,<2`.
+  The `<1` cap was pre-1.0 caution rather than a known incompatibility: every
+  API this package touches survived the 1.0 restructure unchanged, including
+  `BaseObserver.on_push_frame`, the `FramePushed` dataclass and its fields, the
+  frame types the observer inspects, `FrameDirection`, and the runner-argument
+  attributes call identity is derived from (`session_id`, `webrtc_connection`,
+  `pc_id`). Verified by running the full suite against both 0.0.108 and 1.7.0.
+
+### Added
+
+- CI job pinning both ends of the supported `pipecat-ai` range. The unit matrix
+  never installs pipecat (those tests `importorskip`), so nothing previously
+  exercised the declared range.
+
 ## [0.2.0] - 2026-08-04
 
 ### Changed
