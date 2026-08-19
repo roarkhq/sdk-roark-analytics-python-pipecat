@@ -29,3 +29,32 @@ jobs:
         run: mypy src/pipecat_roark
       - name: Test
         run: pytest -q
+
+  # The matrix above never installs pipecat-ai: the tests that import it are
+  # guarded with pytest.importorskip, so they skip and nothing exercises the
+  # declared `pipecat-ai>=0.0.104,<2` range. This job pins both ends of that
+  # range explicitly so a future pipecat release that breaks the observer
+  # contract fails here instead of in a consumer's pipeline.
+  pipecat-compat:
+    name: pipecat ${{ matrix.pipecat }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.x requires Python >=3.11, so this job stays on a single modern
+        # interpreter rather than crossing with the python-version matrix.
+        pipecat: ["0.0.108", "1.7.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" "pipecat-ai==${{ matrix.pipecat }}"
+      - name: Verify the requested pipecat is the one installed
+        run: |
+          python -c "import importlib.metadata as m; v = m.version('pipecat-ai'); assert v == '${{ matrix.pipecat }}', f'expected ${{ matrix.pipecat }}, got {v}'; print('pipecat-ai', v)"
+      - name: Test
+        run: pytest -q -rs

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-roark"
-version = "0.2.0"
+version = "0.2.1"
 description = "Roark analytics observer for Pipecat — capture call lifecycle, transcripts, tool calls, and recordings from any Pipecat pipeline."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -26,8 +26,10 @@ classifiers = [
 dependencies = [
   # pipecat-ai is required at runtime — observer subclasses BaseObserver from this package.
   # >=0.0.104 dispatches the observer lifecycle hook used to post call-started.
-  # Keep <1 to opt into pre-1.0 caution.
-  "pipecat-ai>=0.0.104,<1",
+  # The 1.0 restructure left every API this package touches in place (BaseObserver,
+  # FramePushed, the frame types, FrameDirection, RunnerArguments), so the range spans
+  # both majors and consumers on either side can resolve it.
+  "pipecat-ai>=0.0.104,<2",
   # httpx for the Roark webhook + presigned-upload calls. Async-native, supports
   # connection pooling, and matches Pipecat's own async runtime.
   "httpx>=0.27,<1",
