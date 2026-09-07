@@ -72,6 +72,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from ._call_id import _resolve_pipecat_call_id
+from ._spans import SpanEmitter
 from ._types import (
     CallEndedPayload,
     CallStartedPayload,
@@ -80,7 +81,6 @@ from ._types import (
     TranscriptMessage,
 )
 from .client import RoarkClient
-from .spans import SpanEmitter
 
 if TYPE_CHECKING:  # pragma: no cover
     from pipecat.frames.frames import Frame
@@ -212,11 +212,6 @@ class RoarkObserver(BaseObserver):
             agent_prompt: System prompt for the agent. Persisted as the
                 agent's prompt revision so prompt changes are tracked over
                 time.
-            emit_spans: Emit OpenTelemetry spans for turn release and tool
-                calls, timings Pipecat measures but does not trace. Requires
-                Pipecat tracing (``enable_tracing``/``enable_turn_tracking``);
-                without it, or without an OpenTelemetry SDK installed, nothing
-                is emitted. Pass ``False`` to switch the spans off entirely.
             audio_buffer_processor: Bring-your-own ``AudioBufferProcessor`` to
                 tune sample rate, channel count, or buffer size. If omitted,
                 the observer creates a default (stereo, ~256 KB chunks;
@@ -226,6 +221,10 @@ class RoarkObserver(BaseObserver):
             pipecat_call_id: Deprecated compatibility keyword. Its value is
                 ignored because call identity is derived from ``runner_args``.
                 This keyword will be removed in version 0.3.0.
+            emit_spans: Emit OpenTelemetry spans for turn release and tool
+                calls, timings Pipecat measures but does not trace. Requires
+                Pipecat tracing; without it, or without an OpenTelemetry SDK
+                installed, nothing is emitted. Pass ``False`` to disable.
         """
         super().__init__()
 
@@ -337,10 +336,6 @@ class RoarkObserver(BaseObserver):
         # by frame id so each transcription/TTS/tool-call frame is acted on
         # exactly once — otherwise turns repeat ("Hello!Hello!Hello!").
         self._seen_frame_ids: set[int] = set()
-        # Spans for the two turn timings Pipecat measures but does not trace.
-        # Driven from this observer's own frame dispatch so it inherits the
-        # de-duplication above: a frame pushed across several processor hops is
-        # handled once, so a tool call is stamped at its first hop, not its last.
         self._spans = SpanEmitter() if emit_spans else None
 
     @property
@@ -423,17 +418,17 @@ class RoarkObserver(BaseObserver):
             # type filter below, which drops them.
 
         handled_types = (
-            StartFrame,
-            VADUserStoppedSpeakingFrame,
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
+            VADUserStoppedSpeakingFrame,
             UserStoppedSpeakingFrame,
             BotStartedSpeakingFrame,
             BotStoppedSpeakingFrame,
             InterruptionFrame,
             FunctionCallInProgressFrame,
             FunctionCallResultFrame,
+            StartFrame,
             EndFrame,
             CancelFrame,
             StopFrame,
