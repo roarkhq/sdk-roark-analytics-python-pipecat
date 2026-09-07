@@ -344,6 +344,10 @@ The spans parent themselves through the same `TracingContext` Pipecat hands to
 your STT, LLM and TTS services on the `StartFrame`, so they land in the same
 trace and under the same turn as the stages they sit beside.
 
+The context arrives on the `StartFrame`, so the observer has to be registered
+before the pipeline runs (which it already must be, to post call-started and to
+capture the recording). An observer attached mid-call emits no spans.
+
 Requires OpenTelemetry (`pip install "pipecat-ai[tracing]"`) and Pipecat
 tracing switched on. Without either, or when no turn is active, nothing is
 emitted and nothing raises: a tracing fault must never take down a live call.

@@ -58,7 +58,12 @@ class SpanEmitter:
     """
 
     def __init__(self) -> None:
-        """Create an emitter. It stays inert until it sees a ``StartFrame``."""
+        """Create an emitter.
+
+        It stays inert until it sees a ``StartFrame``, which is what carries the
+        pipeline's tracing context. An observer attached after the pipeline has
+        already started therefore emits nothing.
+        """
         self._tracing_context: Any | None = None
         self._tool_starts: dict[str, tuple[str, int]] = {}
         self._quiet_since: float | None = None
