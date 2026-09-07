@@ -26,12 +26,17 @@ Example::
         ),
     )
 
+``RoarkSpanObserver`` is an optional companion that adds OpenTelemetry spans for
+the turn-release delay and for each tool call — timings Pipecat measures but does
+not trace. It is inert unless Pipecat tracing is enabled.
+
 See https://docs.roark.ai/integrations/pipecat for the full setup guide.
 """
 
 from importlib.metadata import PackageNotFoundError, version
 
 from .observer import RoarkObserver
+from .spans import RoarkSpanObserver
 
 try:
     # Single source of truth: the installed package metadata (driven by
@@ -41,4 +46,4 @@ try:
 except PackageNotFoundError:  # pragma: no cover — running from a source tree
     __version__ = "0.0.0+unknown"
 
-__all__ = ["RoarkObserver"]
+__all__ = ["RoarkObserver", "RoarkSpanObserver"]
