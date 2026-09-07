@@ -316,38 +316,21 @@ timings that shape how fast an agent feels are not in it:
 - **Tool calls** — a turn that spent four seconds in a booking API is
   indistinguishable, in the trace, from one that spent it in the model.
 
-`RoarkSpanObserver` adds both. Register it next to `RoarkObserver`, then hand it
-the task:
+`RoarkObserver` adds both, as children of Pipecat's turn span. There is nothing
+extra to register: switch tracing on and the spans appear.
 
 ```python
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat_roark import RoarkObserver, RoarkSpanObserver
-
-roark = RoarkObserver(
-    api_key="rk_live_replace_me",
-    agent_id="support-bot-v3",
-    runner_args=runner_args,
-)
-spans = RoarkSpanObserver()
-
 task = PipelineTask(
     pipeline,
-    params=PipelineParams(observers=[roark, spans]),
+    params=PipelineParams(observers=[roark]),
     enable_tracing=True,
     enable_turn_tracking=True,
     conversation_id=roark.pipecat_call_id,
 )
-
-spans.bind_task(task)  # required — the spans hang off the turn span the task owns
 ```
 
-`bind_task` is a separate call because the observer has to exist before the
-`PipelineTask` that receives it.
-
-What it emits, per turn, as children of Pipecat's turn span:
-
-| Span            | Carries                                                                       |
-| --------------- | ----------------------------------------------------------------------------- |
+| Span            | Carries                                                                        |
+| --------------- | ------------------------------------------------------------------------------ |
 | `user_turn`     | `roark.end_of_turn_seconds` — caller going quiet to the turn being released     |
 | `function_tool` | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.operation.name=execute_tool` |
 
@@ -357,10 +340,14 @@ detector contributed. Both spans use OpenTelemetry's GenAI attribute
 conventions, so they read correctly in any OTel-aware backend, not only in
 Roark.
 
+The spans parent themselves through the same `TracingContext` Pipecat hands to
+your STT, LLM and TTS services on the `StartFrame`, so they land in the same
+trace and under the same turn as the stages they sit beside.
+
 Requires OpenTelemetry (`pip install "pipecat-ai[tracing]"`) and Pipecat
-tracing switched on. Without either, or when no turn is active, the observer
-emits nothing and raises nothing: a tracing fault must never take down a live
-call.
+tracing switched on. Without either, or when no turn is active, nothing is
+emitted and nothing raises: a tracing fault must never take down a live call.
+Pass `emit_spans=False` to `RoarkObserver` to switch them off entirely.
 
 ---
 

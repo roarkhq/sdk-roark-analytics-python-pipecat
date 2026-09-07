@@ -10,63 +10,21 @@ Two things that shape perceived latency are missing from it:
 * **How long each tool call took.** A turn that spent four seconds in a booking API
   is indistinguishable, in the trace, from one that spent it in the model.
 
-Both are already on frames Pipecat emits; this observer turns them into spans.
+Both are already on frames Pipecat emits, so this is a translation layer rather than
+new instrumentation. ``RoarkObserver`` drives it; there is nothing to register.
 
 Entirely optional and inert by default: with no OpenTelemetry SDK installed, or with
 Pipecat tracing disabled, nothing is emitted and nothing raises. Every failure inside
 span emission is swallowed, because telemetry must never take down a live call.
-
-Example::
-
-    from pipecat_roark import RoarkObserver, RoarkSpanObserver
-
-    roark = RoarkObserver(api_key="rk_live_replace_me", ...)
-    spans = RoarkSpanObserver()
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(observers=[roark, spans]),
-        enable_tracing=True,
-        enable_turn_tracking=True,
-    )
-    spans.bind_task(task)  # required: spans hang from the turn span the task owns
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any
-
-from pipecat.observers.base_observer import BaseObserver, FramePushed
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pipecat.pipeline.task import PipelineTask
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
-# Frame types are imported defensively: this package supports a range of Pipecat
-# versions, and a frame that is missing on an older one should disable the feature
-# that needs it rather than break the import for everybody.
-try:
-    from pipecat.frames.frames import (
-        FunctionCallInProgressFrame,
-        FunctionCallResultFrame,
-    )
-
-    _TOOL_FRAMES_AVAILABLE = True
-except ImportError:  # pragma: no cover - depends on the installed Pipecat version
-    _TOOL_FRAMES_AVAILABLE = False
-
-try:
-    from pipecat.frames.frames import (
-        UserStoppedSpeakingFrame,
-        VADUserStoppedSpeakingFrame,
-    )
-
-    _TURN_FRAMES_AVAILABLE = True
-except ImportError:  # pragma: no cover - depends on the installed Pipecat version
-    _TURN_FRAMES_AVAILABLE = False
 
 #: Span emitted per completed function call. Named to match what other voice
 #: frameworks emit for the same thing, so one consumer reads them all alike.
@@ -90,104 +48,68 @@ _MAX_IN_FLIGHT_TOOL_CALLS = 256
 _MAX_TURN_RELEASE_SECONDS = 30.0
 
 
-class RoarkSpanObserver(BaseObserver):
-    """Emits turn-release and tool-call spans alongside Pipecat's own tracing.
+class SpanEmitter:
+    """Emits turn-release and tool-call spans as children of Pipecat's turn span.
 
-    Register it in ``PipelineParams(observers=[...])`` next to ``RoarkObserver``,
-    then call :meth:`bind_task` with the ``PipelineTask``. Requires Pipecat tracing
-    (``enable_tracing=True``, ``enable_turn_tracking=True``) to be on; without it
-    there is no turn span for these to attach to and nothing is emitted.
+    Internal. ``RoarkObserver`` owns one of these and feeds it the frames it is
+    already inspecting, so the spans inherit that observer's frame de-duplication:
+    one frame pushed across several processor hops is handled once, and a tool
+    call's start is stamped at the first hop rather than the last.
     """
 
     def __init__(self) -> None:
-        """Create the observer. Call :meth:`bind_task` before the pipeline runs."""
-        super().__init__()
-        self._task: PipelineTask | None = None
-        self._warned_unbound = False
+        """Create an emitter. It stays inert until it sees a ``StartFrame``."""
+        self._tracing_context: Any | None = None
         self._tool_starts: dict[str, tuple[str, int]] = {}
         self._quiet_since: float | None = None
 
-    def bind_task(self, task: PipelineTask) -> None:
-        """Attach the task that owns the turn spans these spans hang from.
-
-        Separate from ``__init__`` because the observer has to be constructed before
-        the ``PipelineTask`` that receives it.
-
-        Args:
-            task: The task this observer was registered on.
-        """
-        self._task = task
-
-    # -- internals ---------------------------------------------------------
-
-    def _turn_parent(self) -> Any | None:
-        """A parent context pointing at the current turn span, or ``None``."""
-        task = self._task
-        if task is None:
-            if not self._warned_unbound:
-                self._warned_unbound = True
-                logger.warning(
-                    "RoarkSpanObserver has no task bound, so no spans will be emitted. "
-                    "Call bind_task(task) after constructing the PipelineTask."
-                )
-            return None
-
-        observer = getattr(task, "turn_trace_observer", None)
-        if observer is None:
-            return None
+    def observe(self, frame: Any) -> None:
+        """Translate one frame into span state. Never raises."""
         try:
-            span_context = observer.get_current_turn_context()
-            if span_context is None:
-                return None
-            from opentelemetry.trace import NonRecordingSpan, set_span_in_context
-
-            return set_span_in_context(NonRecordingSpan(span_context))
-        except Exception:
-            return None
-
-    def _emit(self, name: str, start_ns: int, end_ns: int, attributes: dict[str, Any]) -> None:
-        """Record one span. Never raises."""
-        parent = self._turn_parent()
-        if parent is None:
-            # Without a turn to hang from the span would land in a trace of its own,
-            # where nothing can associate it with the conversation. Skip it.
-            return
-        try:
-            from opentelemetry import trace
-
-            span = trace.get_tracer("pipecat-roark").start_span(
-                name, context=parent, start_time=start_ns
-            )
-            for key, value in attributes.items():
-                span.set_attribute(key, value)
-            span.end(end_time=end_ns)
+            self._observe(frame)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("failed to emit %s span: %s: %s", name, type(exc).__name__, exc)
+            logger.warning("span emission failed: %s: %s", type(exc).__name__, exc)
 
-    # -- observer ----------------------------------------------------------
+    # -- frame handling ----------------------------------------------------
 
-    async def on_push_frame(self, data: FramePushed) -> None:
-        """Translate the relevant frames into spans."""
-        frame = data.frame
+    def _observe(self, frame: Any) -> None:
+        from pipecat.frames.frames import (
+            FunctionCallInProgressFrame,
+            FunctionCallResultFrame,
+            StartFrame,
+            UserStoppedSpeakingFrame,
+            VADUserStoppedSpeakingFrame,
+        )
 
-        if _TURN_FRAMES_AVAILABLE:
-            if isinstance(frame, VADUserStoppedSpeakingFrame):
-                self._on_caller_went_quiet(frame)
-                return
-            if isinstance(frame, UserStoppedSpeakingFrame):
-                self._on_turn_released()
-                return
+        if isinstance(frame, StartFrame):
+            # Pipecat hands the pipeline's tracing context out on the StartFrame.
+            # Reading it here is what makes these spans land in the same trace, and
+            # under the same turn, as the stt/llm/tts spans: the services read the
+            # identical accessor to parent their own.
+            self._tracing_context = getattr(frame, "tracing_context", None)
+            return
 
-        if _TOOL_FRAMES_AVAILABLE:
-            if isinstance(frame, FunctionCallInProgressFrame):
-                self._on_tool_started(frame)
-                return
-            if isinstance(frame, FunctionCallResultFrame):
-                self._on_tool_finished(frame)
+        if isinstance(frame, FunctionCallInProgressFrame):
+            self._on_tool_started(frame)
+            return
+
+        if isinstance(frame, FunctionCallResultFrame):
+            self._on_tool_finished(frame)
+            return
+
+        # Checked before UserStoppedSpeakingFrame purely for clarity of ordering;
+        # the two are siblings, not parent and child, so neither shadows the other.
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._on_caller_went_quiet(frame)
+            return
+
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            self._on_turn_released()
 
     def _on_caller_went_quiet(self, frame: Any) -> None:
         stop_secs = getattr(frame, "stop_secs", 0.0) or 0.0
-        if stop_secs == 0.0:
+        timestamp = getattr(frame, "timestamp", None)
+        if stop_secs == 0.0 or timestamp is None:
             # Pipecat's STT service skips its own timer when there is no configured
             # hangover, so there would be nothing comparable to subtract from.
             self._quiet_since = None
@@ -195,7 +117,7 @@ class RoarkSpanObserver(BaseObserver):
         # VAD reports when it decided, so the caller actually stopped `stop_secs`
         # earlier. Correcting for that here is what makes this number comparable to
         # the STT stage's own timing, which applies the identical correction.
-        self._quiet_since = float(frame.timestamp) - float(stop_secs)
+        self._quiet_since = float(timestamp) - float(stop_secs)
 
     def _on_turn_released(self) -> None:
         started = self._quiet_since
@@ -223,9 +145,9 @@ class RoarkSpanObserver(BaseObserver):
     def _on_tool_finished(self, frame: Any) -> None:
         started = self._tool_starts.pop(frame.tool_call_id, None)
         if started is None:
-            # A result with no recorded start: the observer was attached mid-call, or
-            # the pair was already consumed. Timing it from an unknown origin would
-            # read as a very fast tool call.
+            # A result with no recorded start: the pipeline was already running when
+            # the observer attached, or the pair was already consumed. Timing it from
+            # an unknown origin would read as a very fast tool call.
             return
         function_name, start_ns = started
         self._emit(
@@ -240,3 +162,25 @@ class RoarkSpanObserver(BaseObserver):
                 "gen_ai.tool.call.id": frame.tool_call_id,
             },
         )
+
+    # -- emission ----------------------------------------------------------
+
+    def _emit(self, name: str, start_ns: int, end_ns: int, attributes: dict[str, Any]) -> None:
+        context = self._tracing_context
+        if context is None:
+            return
+        parent = context.get_turn_context()
+        if parent is None:
+            # No turn is active: tracing or turn tracking is off, or this landed
+            # between turns. An unparented span would go to a trace of its own,
+            # where nothing can associate it with the conversation.
+            return
+
+        from opentelemetry import trace
+
+        span = trace.get_tracer("pipecat-roark").start_span(
+            name, context=parent, start_time=start_ns
+        )
+        for key, value in attributes.items():
+            span.set_attribute(key, value)
+        span.end(end_time=end_ns)

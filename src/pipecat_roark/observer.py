@@ -80,6 +80,7 @@ from ._types import (
     TranscriptMessage,
 )
 from .client import RoarkClient
+from .spans import SpanEmitter
 
 if TYPE_CHECKING:  # pragma: no cover
     from pipecat.frames.frames import Frame
@@ -194,6 +195,7 @@ class RoarkObserver(BaseObserver):
         agent_prompt: str | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
+        emit_spans: bool = True,
     ) -> None:
         """Construct a ``RoarkObserver`` for a single Pipecat call.
 
@@ -210,6 +212,11 @@ class RoarkObserver(BaseObserver):
             agent_prompt: System prompt for the agent. Persisted as the
                 agent's prompt revision so prompt changes are tracked over
                 time.
+            emit_spans: Emit OpenTelemetry spans for turn release and tool
+                calls, timings Pipecat measures but does not trace. Requires
+                Pipecat tracing (``enable_tracing``/``enable_turn_tracking``);
+                without it, or without an OpenTelemetry SDK installed, nothing
+                is emitted. Pass ``False`` to switch the spans off entirely.
             audio_buffer_processor: Bring-your-own ``AudioBufferProcessor`` to
                 tune sample rate, channel count, or buffer size. If omitted,
                 the observer creates a default (stereo, ~256 KB chunks;
@@ -330,6 +337,11 @@ class RoarkObserver(BaseObserver):
         # by frame id so each transcription/TTS/tool-call frame is acted on
         # exactly once — otherwise turns repeat ("Hello!Hello!Hello!").
         self._seen_frame_ids: set[int] = set()
+        # Spans for the two turn timings Pipecat measures but does not trace.
+        # Driven from this observer's own frame dispatch so it inherits the
+        # de-duplication above: a frame pushed across several processor hops is
+        # handled once, so a tool call is stamped at its first hop, not its last.
+        self._spans = SpanEmitter() if emit_spans else None
 
     @property
     def pipecat_call_id(self) -> str:
@@ -385,11 +397,13 @@ class RoarkObserver(BaseObserver):
             InputAudioRawFrame,
             InterruptionFrame,
             OutputAudioRawFrame,
+            StartFrame,
             StopFrame,
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
             UserStoppedSpeakingFrame,
+            VADUserStoppedSpeakingFrame,
         )
 
         frame: Frame = data.frame
@@ -409,6 +423,8 @@ class RoarkObserver(BaseObserver):
             # type filter below, which drops them.
 
         handled_types = (
+            StartFrame,
+            VADUserStoppedSpeakingFrame,
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
@@ -429,6 +445,9 @@ class RoarkObserver(BaseObserver):
             if fid in self._seen_frame_ids:
                 return
             self._seen_frame_ids.add(fid)
+
+        if self._spans is not None:
+            self._spans.observe(frame)
 
         # Speech-onset markers — capture the start edge of each turn so the
         # transcript timestamp lands where the audio actually begins.
