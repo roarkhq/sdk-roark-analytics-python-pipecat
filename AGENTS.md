@@ -50,13 +50,18 @@ uv run mypy src                 # Type-check the library
 
 ## Code conventions
 
-- **Public vs private**: anything under a module starting with `_` (e.g. `_types.py`) is internal and may change without notice. The public surface is whatever is re-exported from `src/pipecat_roark/__init__.py` — be deliberate about what lands there.
+- **Public vs private**: anything under a module starting with `_` (e.g. `_types.py`) is internal and may change without notice. The public surface is whatever is re-exported from `src/pipecat_roark/__init__.py` — be deliberate about what lands there. A helper that only `RoarkObserver` uses is internal: give it a `_`-prefixed module and keep it out of `__all__`.
+- **Prefer extending the existing public class over adding a new one.** Every public class is a wiring step in someone's pipeline. A feature that can be a keyword argument on `RoarkObserver` should be one.
 - **Type hints required** on all public functions and methods. `py.typed` ships with the package, so users rely on these.
+- **`Any` is not an escape hatch.** Annotate the real type. When a type is needed only for annotations, import it under `if TYPE_CHECKING:`.
+- **Import at module scope.** `pipecat` is a hard dependency, so import its types at the top of the module rather than inside a function that runs per frame. Reserve function-local imports for genuinely optional dependencies (e.g. `opentelemetry`), and say so in the module docstring.
+- **No defensive fallbacks for what the API guarantees.** `getattr(frame, "field", default)` on a declared dataclass field hides typos rather than surviving anything. If you are unsure a field exists across the supported range, check it (see *Supported Pipecat versions*) instead of guessing.
 - **Async everywhere**: this is an async library. New I/O must be async. Do not introduce blocking calls inside the observer hot path.
 - **Imports**: ruff handles sorting (`select = ["I"]` is on). Don't fight it.
 - **Line length**: 100 (set in `pyproject.toml`).
 - **Ruff rules in play**: `E, F, I, B, UP, N`. If you disagree with a rule, fix the code — don't add `# noqa`.
-- **Comments**: write them only when the *why* is non-obvious (a Pipecat API quirk, a workaround for a known bug, a non-obvious invariant). Don't narrate the code.
+- **Comments**: write them only when the *why* is non-obvious (a Pipecat API quirk, a workaround for a known bug, a non-obvious invariant). Don't narrate the code. A comment restating what the next line does, or explaining that something does *not* matter, should be deleted.
+- **Docstrings carry the *why*.** A method's non-obvious invariant belongs in its docstring, where it reaches users through `help()` and the published API docs, not in a comment above one line of its body.
 - **Logging**: use the existing logger pattern in the module. Never log API keys, request bodies that contain transcripts, or PII.
 
 ## Testing
@@ -64,6 +69,8 @@ uv run mypy src                 # Type-check the library
 - Tests live in `tests/` and use pytest with `asyncio_mode = "auto"` (no `@pytest.mark.asyncio` needed).
 - Add a test for any behavior change. Public surface changes without a corresponding test are not acceptable.
 - **Never make real network calls in tests.** Mock `httpx.AsyncClient` (or the `RoarkClient`) — tests must run offline and deterministically.
+- **Mock the I/O boundary, not the library.** Outside of network calls, prefer real objects: real Pipecat frames, a real `TracerProvider` with an in-memory exporter. Asserting against a mock of the thing under test proves only that the mock was called.
+- **A test that cannot fail is not a test.** If an assertion would hold with the behavior removed (two clock reads that could return the same value, an `assert x <= cap` that was never near the cap), tighten it or drive the input so it can actually break.
 - **Never commit a real API key**, recording URL, or transcript fixture that contains real user content. Use synthetic fixtures.
 
 ## Pull requests & commits
@@ -74,11 +81,18 @@ uv run mypy src                 # Type-check the library
 - CI must be green. Don't merge with red checks.
 - Update `CHANGELOG.md` under `[Unreleased]` for any user-visible change (added / changed / fixed / removed).
 
+## Supported Pipecat versions
+
+- The package declares `pipecat-ai>=0.0.104,<2`, which spans both majors. The version in `.venv` is one point in that range, not the contract.
+- Any change touching a Pipecat API must be verified at **both ends** of the range before it ships. CI has jobs for this; run it locally first:
+  `uv run --isolated --with "pipecat-ai==0.0.108" --with "pytest>=8" --with "pytest-asyncio>=0.23" --with "opentelemetry-sdk>=1.24" --with "httpx>=0.27" pytest -q`
+- Before relying on a Pipecat attribute, class hierarchy or module path, check it on the oldest and newest supported versions rather than the one that happens to be installed. Record which versions you checked in the commit message.
+
 ## Releases
 
-- Cut by maintainers via the `Release` workflow, triggered by pushing a `vX.Y.Z` tag.
-- Version is bumped in `pyproject.toml` and `CHANGELOG.md` in the same commit that gets tagged.
-- Contributors **do not** bump versions in their PRs.
+- Publishing is automatic: pushing to `main` runs the `Release` workflow, which compares the `version` in `pyproject.toml` against existing tags. A version with no matching tag is tested across the Python matrix, published to PyPI via Trusted Publishing, then tagged and released on GitHub by the workflow itself.
+- So the version bump **is** the release trigger. A PR that should ship a release bumps `version` in `pyproject.toml` and adds the matching `CHANGELOG.md` section; a PR that should not, leaves both alone and files its entry under `[Unreleased]`.
+- Never push a `vX.Y.Z` tag by hand — the workflow creates it, and an existing tag is what tells it there is nothing to publish.
 
 ---
 

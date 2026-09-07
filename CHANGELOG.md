@@ -6,6 +6,35 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-07
+
+### Added
+
+- `RoarkObserver` now emits OpenTelemetry spans for two turn timings Pipecat
+  measures but does not trace: `user_turn`, carrying `roark.end_of_turn_seconds`
+  (the caller going quiet to the turn being released), and `function_tool` per
+  tool call, carrying the OpenTelemetry GenAI tool attributes. Both are children
+  of Pipecat's turn span.
+
+  No extra setup: the spans appear when Pipecat tracing is on. They parent
+  themselves through the `TracingContext` Pipecat puts on the `StartFrame`, the
+  same accessor the STT, LLM and TTS services use, so they land in the same trace
+  and under the same turn as the stages they sit beside. That context arrives on
+  the `StartFrame`, so an observer attached mid-call emits nothing.
+
+  The `user_turn` span's start is backdated by the VAD hangover
+  (`timestamp - stop_secs`), matching the correction `STTService` applies to its
+  own timer. The shared origin is what makes the two durations subtractable, so
+  removing the `stt` stage's duration isolates the turn detector's contribution.
+
+- `emit_spans` keyword on `RoarkObserver` (default `True`) to switch the spans
+  off.
+
+### Fixed
+
+- Corrected the README's supported `pipecat-ai` range, which still read `< 1`
+  after the requirement was widened to `< 2` in 0.2.1.
+
 ## [0.2.1] - 2026-08-19
 
 ### Changed
