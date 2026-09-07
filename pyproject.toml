@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-roark"
-version = "0.2.1"
+version = "0.3.0"
 description = "Roark analytics observer for Pipecat — capture call lifecycle, transcripts, tool calls, and recordings from any Pipecat pipeline."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -41,6 +41,9 @@ dev = [
   "pytest-asyncio>=0.23",
   "ruff>=0.6",
   "mypy>=1.10",
+  # Exercises RoarkSpanObserver against a real tracer with an in-memory exporter.
+  # Dev-only: the library imports opentelemetry lazily and stays inert without it.
+  "opentelemetry-sdk>=1.24",
 ]
 # Only needed to load .env when running the example locally — the library
 # itself reads env vars directly via os.environ.

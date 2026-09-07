@@ -72,6 +72,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from ._call_id import _resolve_pipecat_call_id
+from ._spans import SpanEmitter
 from ._types import (
     CallEndedPayload,
     CallStartedPayload,
@@ -194,6 +195,7 @@ class RoarkObserver(BaseObserver):
         agent_prompt: str | None = None,
         audio_buffer_processor: AudioBufferProcessor | None = None,
         pipecat_call_id: str | None = None,
+        emit_spans: bool = True,
     ) -> None:
         """Construct a ``RoarkObserver`` for a single Pipecat call.
 
@@ -219,6 +221,10 @@ class RoarkObserver(BaseObserver):
             pipecat_call_id: Deprecated compatibility keyword. Its value is
                 ignored because call identity is derived from ``runner_args``.
                 This keyword will be removed in version 0.3.0.
+            emit_spans: Emit OpenTelemetry spans for turn release and tool
+                calls, timings Pipecat measures but does not trace. Requires
+                Pipecat tracing; without it, or without an OpenTelemetry SDK
+                installed, nothing is emitted. Pass ``False`` to disable.
         """
         super().__init__()
 
@@ -330,6 +336,7 @@ class RoarkObserver(BaseObserver):
         # by frame id so each transcription/TTS/tool-call frame is acted on
         # exactly once — otherwise turns repeat ("Hello!Hello!Hello!").
         self._seen_frame_ids: set[int] = set()
+        self._spans = SpanEmitter() if emit_spans else None
 
     @property
     def pipecat_call_id(self) -> str:
@@ -385,11 +392,13 @@ class RoarkObserver(BaseObserver):
             InputAudioRawFrame,
             InterruptionFrame,
             OutputAudioRawFrame,
+            StartFrame,
             StopFrame,
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
             UserStoppedSpeakingFrame,
+            VADUserStoppedSpeakingFrame,
         )
 
         frame: Frame = data.frame
@@ -412,12 +421,14 @@ class RoarkObserver(BaseObserver):
             TranscriptionFrame,
             TTSTextFrame,
             UserStartedSpeakingFrame,
+            VADUserStoppedSpeakingFrame,
             UserStoppedSpeakingFrame,
             BotStartedSpeakingFrame,
             BotStoppedSpeakingFrame,
             InterruptionFrame,
             FunctionCallInProgressFrame,
             FunctionCallResultFrame,
+            StartFrame,
             EndFrame,
             CancelFrame,
             StopFrame,
@@ -429,6 +440,9 @@ class RoarkObserver(BaseObserver):
             if fid in self._seen_frame_ids:
                 return
             self._seen_frame_ids.add(fid)
+
+        if self._spans is not None:
+            self._spans.observe(frame)
 
         # Speech-onset markers — capture the start edge of each turn so the
         # transcript timestamp lands where the audio actually begins.

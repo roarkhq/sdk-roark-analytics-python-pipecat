@@ -26,6 +26,10 @@ Example::
         ),
     )
 
+When Pipecat tracing is enabled, the observer also emits OpenTelemetry spans for
+the turn-release delay and for each tool call — timings Pipecat measures but does
+not trace. No extra setup; pass ``emit_spans=False`` to switch them off.
+
 See https://docs.roark.ai/integrations/pipecat for the full setup guide.
 """
 
