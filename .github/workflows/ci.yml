@@ -43,7 +43,7 @@ jobs:
       matrix:
         # 1.x requires Python >=3.11, so this job stays on a single modern
         # interpreter rather than crossing with the python-version matrix.
-        pipecat: ["0.0.108", "1.7.0"]
+        pipecat: ["0.0.108", "1.7.0", "1.11.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
