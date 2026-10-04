@@ -223,6 +223,41 @@ async def test_double_flush_only_posts_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_ended_survives_the_pipeline_being_cancelled_mid_post() -> None:
+    """A host that cancels the pipeline task on teardown while the EndFrame's POST
+    is in flight must not lose the call: aflush() waits for the same send instead
+    of returning because the end was already started."""
+    import asyncio
+
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    release = asyncio.Event()
+    original_post = fake.post_call_ended
+
+    async def slow_post(payload: dict[str, Any]) -> bool:
+        await release.wait()
+        return await original_post(payload)
+
+    fake.post_call_ended = slow_post  # type: ignore[method-assign]
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    frame_handler = asyncio.ensure_future(obs.on_push_frame(_push(EndFrame())))
+    await asyncio.sleep(0)
+    frame_handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await frame_handler
+
+    flush = asyncio.ensure_future(obs.aflush(reason="agent-ended"))
+    await asyncio.sleep(0)
+    assert not flush.done()
+    release.set()
+    await flush
+
+    assert len(fake.ended) == 1
+
+
+@pytest.mark.asyncio
 async def test_user_and_assistant_turns_captured_from_raw_frames() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()
