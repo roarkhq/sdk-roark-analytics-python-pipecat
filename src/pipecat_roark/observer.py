@@ -673,7 +673,7 @@ class RoarkObserver(BaseObserver):
         finally:
             await self._client.aclose()
 
-        # Per-call buffers are gone now that the POST has been acknowledged.
+        # The call is over whether or not the POST landed; its buffers are not needed again.
         self._transcript.clear()
         self._tool_calls.clear()
         self._seen_frame_ids.clear()
