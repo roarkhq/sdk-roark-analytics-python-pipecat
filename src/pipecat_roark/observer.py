@@ -244,6 +244,7 @@ class RoarkObserver(BaseObserver):
         self._first_speaker: Literal["assistant", "user"] | None = None
         self._started_posted = False
         self._end_flushed = False
+        self._call_ended_task: asyncio.Task[None] | None = None
 
         # Pending assistant turn — text chunks streamed by TTS, flushed when the
         # bot stops speaking, gets interrupted, or the pipeline ends.
@@ -610,10 +611,17 @@ class RoarkObserver(BaseObserver):
     # ------------------------------------------------------------------ call-ended
 
     async def _flush_call_ended(self, *, reason: str) -> None:
-        if self._end_flushed:
-            return
-        self._end_flushed = True
+        # The first caller starts the send as its own task, and every caller awaits it
+        # shielded. A host that cancels the pipeline task on teardown while the EndFrame
+        # is being handled cancels the waiting frame handler, not the POST, and a later
+        # aflush() waits for that same send rather than returning early and leaving the
+        # call never ended in Roark.
+        if self._call_ended_task is None:
+            self._end_flushed = True
+            self._call_ended_task = asyncio.ensure_future(self._send_call_ended(reason=reason))
+        await asyncio.shield(self._call_ended_task)
 
+    async def _send_call_ended(self, *, reason: str) -> None:
         # Drain the processor's tail buffer before awaiting in-flight uploads so the
         # final chunk task is registered in the set.
         abp = self.audio_processor

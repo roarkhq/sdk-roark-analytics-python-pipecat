@@ -6,6 +6,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- `call-ended` is no longer lost when the host cancels the pipeline task while the
+  `EndFrame`'s POST is in flight. The send now runs as its own task, and `aflush()`
+  waits for it instead of returning because the end was already started. Previously
+  the cancellation killed the POST without a log line and `aflush()` no-opped, so the
+  call stayed in progress in Roark with no transcript or recording.
+
 ## [0.2.1] - 2026-08-19
 
 ### Changed
