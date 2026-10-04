@@ -229,7 +229,7 @@ async def test_call_ended_survives_the_pipeline_being_cancelled_mid_post() -> No
     of returning because the end was already started."""
     import asyncio
 
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
     fake = _FakeClient()
     release = asyncio.Event()
     original_post = fake.post_call_ended
