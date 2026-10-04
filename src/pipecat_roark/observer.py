@@ -666,10 +666,14 @@ class RoarkObserver(BaseObserver):
             len(self._tool_calls),
             self._chunk_index,
         )
-        await self._client.post_call_ended(payload)
-        await self._client.aclose()
+        try:
+            await self._client.post_call_ended(payload)
+        except Exception as err:
+            log.warning("call-ended send failed: %r", err)
+        finally:
+            await self._client.aclose()
 
-        # Per-call buffers are gone now that the POST has been acknowledged.
+        # The call is over whether or not the POST landed; its buffers are not needed again.
         self._transcript.clear()
         self._tool_calls.clear()
         self._seen_frame_ids.clear()
