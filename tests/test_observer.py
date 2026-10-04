@@ -258,6 +258,33 @@ async def test_call_ended_survives_the_pipeline_being_cancelled_mid_post() -> No
 
 
 @pytest.mark.asyncio
+async def test_call_ended_send_that_raises_is_logged_and_still_closes_the_client(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    closed: list[bool] = []
+
+    async def failing_post(payload: dict[str, Any]) -> bool:
+        raise RuntimeError("boom")
+
+    async def record_close() -> None:
+        closed.append(True)
+
+    fake.post_call_ended = failing_post  # type: ignore[method-assign]
+    fake.aclose = record_close  # type: ignore[method-assign]
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    with caplog.at_level("WARNING"):
+        await obs.on_push_frame(_push(EndFrame()))
+        await obs.aflush(reason="agent-ended")
+
+    assert "call-ended send failed" in caplog.text
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
 async def test_user_and_assistant_turns_captured_from_raw_frames() -> None:
     obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
     fake = _FakeClient()

@@ -668,9 +668,10 @@ class RoarkObserver(BaseObserver):
         )
         try:
             await self._client.post_call_ended(payload)
-            await self._client.aclose()
-        except Exception as err:  # pragma: no cover — defensive
+        except Exception as err:
             log.warning("call-ended send failed: %r", err)
+        finally:
+            await self._client.aclose()
 
         # Per-call buffers are gone now that the POST has been acknowledged.
         self._transcript.clear()
