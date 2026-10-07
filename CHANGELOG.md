@@ -6,6 +6,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-07
+
+### Fixed
+
+- The recording no longer loses its last chunk. At the end of a call the observer
+  stops the `AudioBufferProcessor` to flush the audio buffered since the last full
+  chunk, but Pipecat runs `on_audio_data` handlers as background tasks and the
+  observer ignored audio once the call had started ending, so that tail was never
+  uploaded and the recording stopped at the last full chunk (up to `buffer_size`
+  short). The observer now waits for the handlers and uploads the tail before
+  posting `call-ended`.
+
 ## [0.2.3] - 2026-10-07
 
 ### Fixed
