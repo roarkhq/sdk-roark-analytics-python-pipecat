@@ -457,13 +457,14 @@ class RoarkObserver(BaseObserver):
             self._observe_assistant_text(frame, released=_is_output_transport(data.source))
             return
         if (
-            isinstance(frame, EndFrame)
+            isinstance(frame, (EndFrame, StopFrame))
             and self._has_output_transport
             and not _is_output_transport(data.source)
         ):
-            # The output transport plays out what it holds before it passes
-            # EndFrame on, releasing the rest of the last turn's words; the
-            # call ends when it does. A CancelFrame still ends it at once.
+            # The output transport plays out the audio queued ahead of an
+            # EndFrame or StopFrame before it passes the frame on, releasing
+            # the rest of the last turn's words; the call ends when it does.
+            # A CancelFrame still ends it at once.
             return
         fid = getattr(frame, "id", None)
         if isinstance(fid, int):

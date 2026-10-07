@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("pipecat", reason="pipecat-ai not installed in this env")
 
-from pipecat.frames.frames import (  # noqa: E402
+from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EndFrame,
@@ -29,6 +29,7 @@ from pipecat.frames.frames import (  # noqa: E402
     InterruptionFrame,
     OutputAudioRawFrame,
     StartFrame,
+    StopFrame,  # noqa: E402
     TranscriptionFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
@@ -696,6 +697,28 @@ async def test_the_call_ends_once_the_transport_has_played_out_the_last_turn() -
 
     assistant = [m["content"] for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
     assert assistant == ["Thanks, goodbye now."]
+
+
+@pytest.mark.asyncio
+async def test_a_stop_frame_waits_for_the_transport_too() -> None:
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    word = TTSTextFrame(text="Bye.", aggregated_by="word")
+    await obs.on_push_frame(_from(tts, word))
+    stop = StopFrame()
+    await obs.on_push_frame(_from(tts, stop))
+    assert fake.ended == []
+    await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_from(transport, stop))
+    await obs.aflush()
+
+    assistant = [m["content"] for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
+    assert assistant == ["Bye."]
 
 
 @pytest.mark.asyncio
