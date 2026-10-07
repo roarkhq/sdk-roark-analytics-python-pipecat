@@ -88,6 +88,13 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger("pipecat_roark.observer")
 
 
+def _is_output_transport(processor: object) -> bool:
+    """Whether a frame was pushed by an output transport, which releases text as its audio plays."""
+    from pipecat.transports.base_output import BaseOutputTransport
+
+    return isinstance(processor, BaseOutputTransport)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -248,7 +255,18 @@ class RoarkObserver(BaseObserver):
 
         # Pending assistant turn — text chunks streamed by TTS, flushed when the
         # bot stops speaking, gets interrupted, or the pipeline ends.
+        #
+        # A TTS service emits a sentence's words as soon as it has synthesized
+        # them, often seconds before they are heard. The output transport holds
+        # each one until its audio plays and drops the rest on an interruption,
+        # so the words it releases are the words the caller heard. Those are
+        # what the transcript records; the words as generated are kept only for
+        # a pipeline whose text never passes through an output transport.
         self._assistant_text_parts: list[str] = []
+        self._assistant_generated_parts: list[str] = []
+        self._generated_text_ids: set[int] = set()
+        self._played_text_ids: set[int] = set()
+        self._output_transport_releases_text = False
         self._assistant_start_iso: str | None = None
         self._assistant_start_monotonic: float | None = None
 
@@ -425,6 +443,9 @@ class RoarkObserver(BaseObserver):
         )
         if not isinstance(frame, handled_types):
             return
+        if isinstance(frame, TTSTextFrame):
+            self._observe_assistant_text(frame, released=_is_output_transport(data.source))
+            return
         fid = getattr(frame, "id", None)
         if isinstance(fid, int):
             if fid in self._seen_frame_ids:
@@ -471,10 +492,6 @@ class RoarkObserver(BaseObserver):
             # _user_text_parts note in __init__ for why we do NOT gate on
             # frame.finalized.
             self._accumulate_user_text(frame)
-            return
-
-        if isinstance(frame, TTSTextFrame):
-            self._accumulate_assistant_text(frame)
             return
 
         if isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
@@ -677,6 +694,8 @@ class RoarkObserver(BaseObserver):
         self._transcript.clear()
         self._tool_calls.clear()
         self._seen_frame_ids.clear()
+        self._generated_text_ids.clear()
+        self._played_text_ids.clear()
 
     # ------------------------------------------------------------------ transcript
 
@@ -767,23 +786,46 @@ class RoarkObserver(BaseObserver):
             self._user_id = None
             self._user_language = None
 
-    def _accumulate_assistant_text(self, frame: object) -> None:
+    def _observe_assistant_text(self, frame: object, *, released: bool) -> None:
+        """Record a TTS text frame once as generated and once as released for playout."""
         try:
+            fid = getattr(frame, "id", None)
+            if not isinstance(fid, int):
+                fid = id(frame)
             text = getattr(frame, "text", "") or ""
+            if released:
+                self._output_transport_releases_text = True
+                if fid in self._played_text_ids:
+                    return
+                self._played_text_ids.add(fid)
+                parts = self._assistant_text_parts
+            else:
+                if fid in self._generated_text_ids:
+                    return
+                self._generated_text_ids.add(fid)
+                parts = self._assistant_generated_parts
             if not text:
                 return
-            if not self._assistant_text_parts:
+            if not self._assistant_text_parts and not self._assistant_generated_parts:
                 self._assistant_start_iso = _utc_now_iso()
                 self._assistant_start_monotonic = self._now_monotonic()
-            self._assistant_text_parts.append(text)
+            parts.append(text)
         except Exception as err:  # pragma: no cover — defensive
             log.warning("failed to accumulate assistant text: %r", err)
 
     def _flush_assistant_turn(self) -> None:
-        if not self._assistant_text_parts:
+        parts = (
+            self._assistant_text_parts
+            if self._output_transport_releases_text
+            else self._assistant_generated_parts
+        )
+        if not parts:
+            # Words generated but never played (an interruption before any
+            # audio) leave nothing to record; drop them with the turn.
+            self._assistant_generated_parts = []
             return
         try:
-            content = _join_text_chunks(self._assistant_text_parts).strip()
+            content = _join_text_chunks(parts).strip()
             # Prefer the bot-audio onset (BotStartedSpeakingFrame) — that's
             # where the speech actually lands in the recording. The first
             # TTSTextFrame is text generation, which precedes audio playout;
@@ -800,6 +842,7 @@ class RoarkObserver(BaseObserver):
                 self._bot_stopped_iso, self._bot_stopped_monotonic
             )
             self._assistant_text_parts = []
+            self._assistant_generated_parts = []
             self._assistant_start_iso = None
             self._assistant_start_monotonic = None
             self._bot_started_iso = None
@@ -830,6 +873,7 @@ class RoarkObserver(BaseObserver):
             log.warning("failed to flush assistant turn: %r", err)
             # Reset so a parser glitch doesn't poison the next turn.
             self._assistant_text_parts = []
+            self._assistant_generated_parts = []
             self._assistant_start_iso = None
             self._assistant_start_monotonic = None
             self._bot_started_iso = None
