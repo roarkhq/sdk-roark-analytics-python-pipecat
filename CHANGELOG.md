@@ -6,6 +6,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-07
+
 ### Fixed
 
 - Assistant turns now hold only the words the caller heard. A TTS service emits a
