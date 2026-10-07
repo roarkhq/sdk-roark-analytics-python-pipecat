@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("pipecat", reason="pipecat-ai not installed in this env")
 
-from pipecat.frames.frames import (  # noqa: E402
+from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EndFrame,
@@ -29,6 +29,7 @@ from pipecat.frames.frames import (  # noqa: E402
     InterruptionFrame,
     OutputAudioRawFrame,
     StartFrame,
+    StopFrame,  # noqa: E402
     TranscriptionFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
@@ -585,6 +586,186 @@ async def test_interruption_flushes_partial_assistant_turn() -> None:
     transcript = fake.ended[0]["transcript"]
     assert [m["role"] for m in transcript] == ["assistant", "user"]
     assert transcript[0]["content"] == "let me explain"
+
+
+def _output_transport() -> Any:
+    from pipecat.transports.base_output import BaseOutputTransport
+    from pipecat.transports.base_transport import TransportParams
+
+    return BaseOutputTransport(TransportParams())
+
+
+def _from(source: Any, frame: Any) -> FramePushed:
+    return FramePushed(
+        source=source,
+        destination=None,  # type: ignore[arg-type]
+        frame=frame,
+        direction=FrameDirection.DOWNSTREAM,
+        timestamp=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_turn_keeps_only_the_words_that_played() -> None:
+    """The TTS emits a whole answer's words in a burst; the output transport
+    releases each as its audio plays. An interruption after the first sentence
+    must not record the second."""
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    words = [
+        TTSTextFrame(text=w, aggregated_by="word")
+        for w in "No earlier slot. You are booked for two.".split()
+    ]
+    for word in words:
+        await obs.on_push_frame(_from(tts, word))
+    for word in words[:3]:
+        await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    await obs.on_push_frame(_push(_user_frame("hello?")))
+    await obs.on_push_frame(_from(transport, EndFrame()))
+
+    transcript = fake.ended[0]["transcript"]
+    assert [m["role"] for m in transcript] == ["assistant", "user"]
+    assert transcript[0]["content"] == "No earlier slot."
+
+
+@pytest.mark.asyncio
+async def test_a_played_word_is_recorded_once_across_hops() -> None:
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    word = TTSTextFrame(text="Hello!", aggregated_by="word")
+    for source in (tts, tts, transport, transport):
+        await obs.on_push_frame(_from(source, word))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_from(transport, EndFrame()))
+
+    assistant = [m for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
+    assert [m["content"] for m in assistant] == ["Hello!"]
+
+
+@pytest.mark.asyncio
+async def test_words_cut_before_any_audio_record_no_turn() -> None:
+    """Once the transport is known to release text, a turn interrupted before
+    its first word played leaves nothing in the transcript."""
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    await obs.on_push_frame(_from(tts, TTSTextFrame(text="Unheard.", aggregated_by="word")))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    await obs.on_push_frame(_push(_user_frame("hello?")))
+    await obs.on_push_frame(_from(transport, EndFrame()))
+
+    assert [m["role"] for m in fake.ended[0]["transcript"]] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_the_call_ends_once_the_transport_has_played_out_the_last_turn() -> None:
+    """EndFrame reaches the observer upstream of the transport while the last
+    words are still queued behind audio; the call ends when the transport
+    passes it on, with those words in the turn."""
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    words = [TTSTextFrame(text=w, aggregated_by="word") for w in "Thanks, goodbye now.".split()]
+    for word in words:
+        await obs.on_push_frame(_from(tts, word))
+    await obs.on_push_frame(_from(transport, words[0]))
+    end = EndFrame()
+    await obs.on_push_frame(_from(tts, end))
+    assert fake.ended == []
+    for word in words[1:]:
+        await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_from(transport, end))
+    await obs.aflush()
+
+    assistant = [m["content"] for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
+    assert assistant == ["Thanks, goodbye now."]
+
+
+@pytest.mark.asyncio
+async def test_a_stop_frame_waits_for_the_transport_too() -> None:
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    word = TTSTextFrame(text="Bye.", aggregated_by="word")
+    await obs.on_push_frame(_from(tts, word))
+    stop = StopFrame()
+    await obs.on_push_frame(_from(tts, stop))
+    assert fake.ended == []
+    await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_from(transport, stop))
+    await obs.aflush()
+
+    assistant = [m["content"] for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
+    assert assistant == ["Bye."]
+
+
+@pytest.mark.asyncio
+async def test_an_unheard_turn_leaves_no_timing_for_the_next() -> None:
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    await obs.on_push_frame(_push(BotStartedSpeakingFrame()))
+    await obs.on_push_frame(_from(tts, TTSTextFrame(text="Unheard.", aggregated_by="word")))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    assert obs._assistant_start_iso is None
+    assert obs._bot_started_iso is None
+    assert obs._bot_stopped_iso is None
+    await obs.on_push_frame(_from(transport, EndFrame()))
+
+
+@pytest.mark.asyncio
+async def test_each_turn_keeps_its_own_played_words() -> None:
+    """A turn's generated-but-unplayed words do not leak into the next, and
+    words already recorded do not suppress a later turn's."""
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    first = [TTSTextFrame(text=w, aggregated_by="word") for w in "One two. Three four.".split()]
+    for word in first:
+        await obs.on_push_frame(_from(tts, word))
+    for word in first[:2]:
+        await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    await obs.on_push_frame(_push(_user_frame("wait")))
+    second = [TTSTextFrame(text=w, aggregated_by="word") for w in "Sure, go on.".split()]
+    for word in second:
+        await obs.on_push_frame(_from(tts, word))
+        await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_from(transport, EndFrame()))
+
+    assistant = [m["content"] for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
+    assert assistant == ["One two.", "Sure, go on."]
 
 
 @pytest.mark.asyncio

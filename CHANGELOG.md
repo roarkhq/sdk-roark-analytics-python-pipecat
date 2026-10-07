@@ -6,6 +6,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-07
+
+### Fixed
+
+- Assistant turns now hold only the words the caller heard. A TTS service emits a
+  sentence's words as soon as it has synthesized them, often seconds before they
+  play, and the observer recorded them as it first saw them, so a turn cut short by
+  an interruption was stored with the words that never played. Words are now
+  recorded as the output transport releases them for playout. A pipeline whose TTS
+  text never passes through an output transport keeps the previous behavior.
+
 ## [0.2.2] - 2026-10-05
 
 ### Fixed
