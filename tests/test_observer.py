@@ -955,8 +955,15 @@ async def test_a_hung_audio_handler_does_not_hold_call_ended(
     monkeypatch.setattr(observer_module, "_AUDIO_DATA_HANDLER_TIMEOUT_SECS", 0.05)
     abp = _BackgroundDispatchAudioBufferProcessor(tail=b"\x05\x06" * 64, sample_rate=8000)
 
+    release = asyncio.Event()
+
     async def hang(*_: Any) -> None:
-        await asyncio.sleep(3600)
+        # Refuses cancellation until released: the deadline must free call-ended anyway.
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
 
     abp.add_event_handler("on_audio_data", hang)
     obs = RoarkObserver(
@@ -969,8 +976,10 @@ async def test_a_hung_audio_handler_does_not_hold_call_ended(
     await asyncio.wait_for(obs.aflush(reason="client-disconnected"), timeout=2)
 
     assert len(fake.ended) == 1
-    for _, task in list(abp._event_tasks):
-        task.cancel()
+    hung = [task for _, task in list(abp._event_tasks) if not task.done()]
+    assert hung, "the hung handler is left running, not cancelled"
+    release.set()
+    await asyncio.gather(*hung)
 
 
 @pytest.mark.asyncio

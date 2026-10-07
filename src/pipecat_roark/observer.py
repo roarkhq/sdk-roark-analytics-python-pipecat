@@ -124,12 +124,11 @@ async def _await_audio_data_handlers(processor: object) -> None:
     ]
     if not pending:
         return
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(*pending, return_exceptions=True),
-            timeout=_AUDIO_DATA_HANDLER_TIMEOUT_SECS,
-        )
-    except asyncio.TimeoutError:
+    # asyncio.wait, not wait_for: at the deadline it stops waiting and leaves
+    # the handlers alone, where wait_for would cancel them (other subscribers'
+    # included) and then wait for that cancellation to finish.
+    _, still_running = await asyncio.wait(pending, timeout=_AUDIO_DATA_HANDLER_TIMEOUT_SECS)
+    if still_running:
         log.warning(
             "on_audio_data handlers still running after %.0fs; posting call-ended without them",
             _AUDIO_DATA_HANDLER_TIMEOUT_SECS,
