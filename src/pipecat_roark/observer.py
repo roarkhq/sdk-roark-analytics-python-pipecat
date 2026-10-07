@@ -101,19 +101,39 @@ def _is_output_transport(processor: object) -> bool:
     return isinstance(processor, _output_transport_type)
 
 
+# How long call-ended waits for the recording's last on_audio_data handlers. A
+# handler that hangs (another subscriber's, say) must not hold the webhook forever.
+_AUDIO_DATA_HANDLER_TIMEOUT_SECS = 10.0
+
+
 async def _await_audio_data_handlers(processor: object) -> None:
     """Wait for the processor's pending ``on_audio_data`` handler tasks.
 
     Pipecat dispatches non-sync event handlers with ``asyncio.create_task`` and
     tracks them in ``_event_tasks`` as ``(event_name, task)`` pairs.
     """
+    event_tasks = getattr(processor, "_event_tasks", None)
+    if event_tasks is None:
+        log.warning(
+            "AudioBufferProcessor has no _event_tasks; the recording's final chunk "
+            "may be missing from call-ended"
+        )
+        return
     pending = [
-        task
-        for name, task in list(getattr(processor, "_event_tasks", ()) or ())
-        if name == "on_audio_data" and not task.done()
+        task for name, task in list(event_tasks) if name == "on_audio_data" and not task.done()
     ]
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+    if not pending:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=_AUDIO_DATA_HANDLER_TIMEOUT_SECS,
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "on_audio_data handlers still running after %.0fs; posting call-ended without them",
+            _AUDIO_DATA_HANDLER_TIMEOUT_SECS,
+        )
 
 
 def _utc_now_iso() -> str:
