@@ -833,8 +833,13 @@ class RoarkObserver(BaseObserver):
         )
         if not parts:
             # Words generated but never played (an interruption before any
-            # audio) leave nothing to record; drop them with the turn.
+            # audio) leave nothing to record; drop them with the turn, and the
+            # edges they stamped, so the next turn starts clean.
             self._assistant_generated_parts = []
+            self._assistant_start_iso = None
+            self._assistant_start_monotonic = None
+            self._bot_stopped_iso = None
+            self._bot_stopped_monotonic = None
             return
         try:
             content = _join_text_chunks(parts).strip()

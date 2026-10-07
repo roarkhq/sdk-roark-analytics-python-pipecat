@@ -671,6 +671,22 @@ async def test_words_cut_before_any_audio_record_no_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_unheard_turn_leaves_no_timing_for_the_next() -> None:
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    await obs.on_push_frame(_from(tts, TTSTextFrame(text="Unheard.", aggregated_by="word")))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    assert obs._assistant_start_iso is None
+    assert obs._bot_stopped_iso is None
+    await obs.on_push_frame(_push(EndFrame()))
+
+
+@pytest.mark.asyncio
 async def test_each_turn_keeps_its_own_played_words() -> None:
     """A turn's generated-but-unplayed words do not leak into the next, and
     words already recorded do not suppress a later turn's."""
