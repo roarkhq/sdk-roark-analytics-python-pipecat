@@ -88,11 +88,17 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger("pipecat_roark.observer")
 
 
+_output_transport_type: type | None = None
+
+
 def _is_output_transport(processor: object) -> bool:
     """Whether a frame was pushed by an output transport, which releases text as its audio plays."""
-    from pipecat.transports.base_output import BaseOutputTransport
+    global _output_transport_type
+    if _output_transport_type is None:
+        from pipecat.transports.base_output import BaseOutputTransport
 
-    return isinstance(processor, BaseOutputTransport)
+        _output_transport_type = BaseOutputTransport
+    return isinstance(processor, _output_transport_type)
 
 
 def _utc_now_iso() -> str:
@@ -266,7 +272,9 @@ class RoarkObserver(BaseObserver):
         self._assistant_generated_parts: list[str] = []
         self._generated_text_ids: set[int] = set()
         self._played_text_ids: set[int] = set()
-        self._output_transport_releases_text = False
+        # Set by the first frame an output transport pushes (its StartFrame, at
+        # the latest), so the first turn already records only what played.
+        self._has_output_transport = False
         self._assistant_start_iso: str | None = None
         self._assistant_start_monotonic: float | None = None
 
@@ -412,6 +420,8 @@ class RoarkObserver(BaseObserver):
         )
 
         frame: Frame = data.frame
+        if not self._has_output_transport and _is_output_transport(data.source):
+            self._has_output_transport = True
 
         # Anchor the audio-offset clock to the first audio frame the pipeline
         # carries — that's WAV sample 0 in the merged recording. AudioBuffer-
@@ -794,7 +804,6 @@ class RoarkObserver(BaseObserver):
                 fid = id(frame)
             text = getattr(frame, "text", "") or ""
             if released:
-                self._output_transport_releases_text = True
                 if fid in self._played_text_ids:
                     return
                 self._played_text_ids.add(fid)
@@ -806,7 +815,10 @@ class RoarkObserver(BaseObserver):
                 parts = self._assistant_generated_parts
             if not text:
                 return
-            if not self._assistant_text_parts and not self._assistant_generated_parts:
+            if released and not self._assistant_text_parts:
+                self._assistant_start_iso = _utc_now_iso()
+                self._assistant_start_monotonic = self._now_monotonic()
+            elif not self._assistant_text_parts and not self._assistant_generated_parts:
                 self._assistant_start_iso = _utc_now_iso()
                 self._assistant_start_monotonic = self._now_monotonic()
             parts.append(text)
@@ -816,7 +828,7 @@ class RoarkObserver(BaseObserver):
     def _flush_assistant_turn(self) -> None:
         parts = (
             self._assistant_text_parts
-            if self._output_transport_releases_text
+            if self._has_output_transport
             else self._assistant_generated_parts
         )
         if not parts:

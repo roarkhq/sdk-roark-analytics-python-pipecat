@@ -609,12 +609,13 @@ async def test_interrupted_turn_keeps_only_the_words_that_played() -> None:
     """The TTS emits a whole answer's words in a burst; the output transport
     releases each as its audio plays. An interruption after the first sentence
     must not record the second."""
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
     tts, transport = object(), _output_transport()
 
     await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
     words = [
         TTSTextFrame(text=w, aggregated_by="word")
         for w in "No earlier slot. You are booked for two.".split()
@@ -634,7 +635,7 @@ async def test_interrupted_turn_keeps_only_the_words_that_played() -> None:
 
 @pytest.mark.asyncio
 async def test_a_played_word_is_recorded_once_across_hops() -> None:
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
     tts, transport = object(), _output_transport()
@@ -654,22 +655,48 @@ async def test_a_played_word_is_recorded_once_across_hops() -> None:
 async def test_words_cut_before_any_audio_record_no_turn() -> None:
     """Once the transport is known to release text, a turn interrupted before
     its first word played leaves nothing in the transcript."""
-    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
     fake = _FakeClient()
     obs._client = fake  # type: ignore[assignment]
     tts, transport = object(), _output_transport()
 
     await obs.on_pipeline_started()
-    hello = TTSTextFrame(text="Hi.", aggregated_by="word")
-    await obs.on_push_frame(_from(tts, hello))
-    await obs.on_push_frame(_from(transport, hello))
-    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_from(transport, StartFrame()))
     await obs.on_push_frame(_from(tts, TTSTextFrame(text="Unheard.", aggregated_by="word")))
     await obs.on_push_frame(_push(InterruptionFrame()))
+    await obs.on_push_frame(_push(_user_frame("hello?")))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert [m["role"] for m in fake.ended[0]["transcript"]] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_each_turn_keeps_its_own_played_words() -> None:
+    """A turn's generated-but-unplayed words do not leak into the next, and
+    words already recorded do not suppress a later turn's."""
+    obs = RoarkObserver(api_key="rk_live_replace_me", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+    tts, transport = object(), _output_transport()
+
+    await obs.on_pipeline_started()
+    await obs.on_push_frame(_from(transport, StartFrame()))
+    first = [TTSTextFrame(text=w, aggregated_by="word") for w in "One two. Three four.".split()]
+    for word in first:
+        await obs.on_push_frame(_from(tts, word))
+    for word in first[:2]:
+        await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_push(InterruptionFrame()))
+    await obs.on_push_frame(_push(_user_frame("wait")))
+    second = [TTSTextFrame(text=w, aggregated_by="word") for w in "Sure, go on.".split()]
+    for word in second:
+        await obs.on_push_frame(_from(tts, word))
+        await obs.on_push_frame(_from(transport, word))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
     await obs.on_push_frame(_push(EndFrame()))
 
     assistant = [m["content"] for m in fake.ended[0]["transcript"] if m["role"] == "assistant"]
-    assert assistant == ["Hi."]
+    assert assistant == ["One two.", "Sure, go on."]
 
 
 @pytest.mark.asyncio
