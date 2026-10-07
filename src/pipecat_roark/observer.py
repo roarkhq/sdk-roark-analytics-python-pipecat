@@ -456,6 +456,15 @@ class RoarkObserver(BaseObserver):
         if isinstance(frame, TTSTextFrame):
             self._observe_assistant_text(frame, released=_is_output_transport(data.source))
             return
+        if (
+            isinstance(frame, EndFrame)
+            and self._has_output_transport
+            and not _is_output_transport(data.source)
+        ):
+            # The output transport plays out what it holds before it passes
+            # EndFrame on, releasing the rest of the last turn's words; the
+            # call ends when it does. A CancelFrame still ends it at once.
+            return
         fid = getattr(frame, "id", None)
         if isinstance(fid, int):
             if fid in self._seen_frame_ids:
@@ -838,6 +847,8 @@ class RoarkObserver(BaseObserver):
             self._assistant_generated_parts = []
             self._assistant_start_iso = None
             self._assistant_start_monotonic = None
+            self._bot_started_iso = None
+            self._bot_started_monotonic = None
             self._bot_stopped_iso = None
             self._bot_stopped_monotonic = None
             return
