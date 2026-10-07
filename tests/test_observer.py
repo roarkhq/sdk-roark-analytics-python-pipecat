@@ -9,6 +9,7 @@ pipeline and the observer only subscribes to its event.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from functools import partial
 from types import SimpleNamespace
@@ -870,6 +871,115 @@ async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
     ended = fake.ended[0]
     assert ended["recordingSampleRate"] == 24000
     assert ended["recordingNumChannels"] == 2
+
+
+class _BackgroundDispatchAudioBufferProcessor(_FakeAudioBufferProcessor):
+    """Dispatches ``on_audio_data`` the way Pipecat does for a non-sync event:
+    each handler runs in a task tracked in ``_event_tasks``, so
+    ``stop_recording`` returns before the handler for the tail has run."""
+
+    def __init__(self, tail: bytes, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._tail = tail
+        self._event_tasks: set[tuple[str, asyncio.Task[None]]] = set()
+
+    async def stop_recording(self) -> None:
+        await super().stop_recording()
+        for handler in self._handlers:
+
+            async def run(h: Any = handler) -> None:
+                await asyncio.sleep(0.01)
+                await h(self, self._tail, self.sample_rate, self.num_channels)
+
+            task = asyncio.create_task(run())
+            self._event_tasks.add(("on_audio_data", task))
+            task.add_done_callback(lambda t: self._event_tasks.discard(("on_audio_data", t)))
+
+
+@pytest.mark.asyncio
+async def test_call_ended_waits_for_the_recordings_final_chunk() -> None:
+    """The tail of the recording reaches the observer after stop_recording
+    returns; call-ended must not be posted until it has been uploaded."""
+    abp = _BackgroundDispatchAudioBufferProcessor(tail=b"\x05\x06" * 64, sample_rate=8000)
+    obs = RoarkObserver(
+        api_key="rk_live_replace_me", agent_id="agent-1", audio_buffer_processor=abp
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await abp.emit_audio(b"\x01\x02" * 512)
+    await obs.aflush(reason="client-disconnected")
+
+    assert [r["chunk_index"] for r in fake.chunk_url_requests] == [0, 1]
+    assert fake.chunk_uploads[-1] == b"\x05\x06" * 64
+    assert len(fake.ended) == 1
+
+
+@pytest.mark.asyncio
+async def test_call_ended_carries_the_tail_of_a_real_audio_buffer_processor() -> None:
+    """Pipecat's own AudioBufferProcessor: the audio buffered since the last
+    full chunk is uploaded before call-ended is posted.
+
+    It sets the processor's private recording state directly, on purpose: the
+    point is to run Pipecat's real event dispatch, so a release that changes how
+    on_audio_data handlers are scheduled fails here across the CI version matrix.
+    """
+    from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+
+    abp = AudioBufferProcessor(sample_rate=8000, num_channels=2, buffer_size=10 * 8000 * 2)
+    obs = RoarkObserver(
+        api_key="rk_live_replace_me", agent_id="agent-1", audio_buffer_processor=abp
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    abp._recording = True
+    abp._sample_rate = 8000
+    abp._user_audio_buffer.extend(b"\x01\x00" * 800)
+    abp._bot_audio_buffer.extend(b"\x02\x00" * 800)
+    await obs.aflush(reason="client-disconnected")
+
+    assert len(fake.chunk_uploads) == 1
+    assert len(fake.chunk_uploads[0]) == 800 * 2 * 2
+    assert fake.ended[0]["recordingNumChannels"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_hung_audio_handler_does_not_hold_call_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipecat_roark.observer as observer_module
+
+    monkeypatch.setattr(observer_module, "_AUDIO_DATA_HANDLER_TIMEOUT_SECS", 0.05)
+    abp = _BackgroundDispatchAudioBufferProcessor(tail=b"\x05\x06" * 64, sample_rate=8000)
+
+    release = asyncio.Event()
+
+    async def hang(*_: Any) -> None:
+        # Refuses cancellation until released: the deadline must free call-ended anyway.
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    abp.add_event_handler("on_audio_data", hang)
+    obs = RoarkObserver(
+        api_key="rk_live_replace_me", agent_id="agent-1", audio_buffer_processor=abp
+    )
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    await asyncio.wait_for(obs.aflush(reason="client-disconnected"), timeout=2)
+
+    assert len(fake.ended) == 1
+    hung = [task for _, task in list(abp._event_tasks) if not task.done()]
+    assert hung, "the hung handler is left running, not cancelled"
+    release.set()
+    await asyncio.gather(*hung)
 
 
 @pytest.mark.asyncio

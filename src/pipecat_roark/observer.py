@@ -101,6 +101,40 @@ def _is_output_transport(processor: object) -> bool:
     return isinstance(processor, _output_transport_type)
 
 
+# How long call-ended waits for the recording's last on_audio_data handlers. A
+# handler that hangs (another subscriber's, say) must not hold the webhook forever.
+_AUDIO_DATA_HANDLER_TIMEOUT_SECS = 10.0
+
+
+async def _await_audio_data_handlers(processor: object) -> None:
+    """Wait for the processor's pending ``on_audio_data`` handler tasks.
+
+    Pipecat dispatches non-sync event handlers with ``asyncio.create_task`` and
+    tracks them in ``_event_tasks`` as ``(event_name, task)`` pairs.
+    """
+    event_tasks = getattr(processor, "_event_tasks", None)
+    if event_tasks is None:
+        log.warning(
+            "AudioBufferProcessor has no _event_tasks; the recording's final chunk "
+            "may be missing from call-ended"
+        )
+        return
+    pending = [
+        task for name, task in list(event_tasks) if name == "on_audio_data" and not task.done()
+    ]
+    if not pending:
+        return
+    # asyncio.wait, not wait_for: at the deadline it stops waiting and leaves
+    # the handlers alone, where wait_for would cancel them (other subscribers'
+    # included) and then wait for that cancellation to finish.
+    _, still_running = await asyncio.wait(pending, timeout=_AUDIO_DATA_HANDLER_TIMEOUT_SECS)
+    if still_running:
+        log.warning(
+            "on_audio_data handlers still running after %.0fs; posting call-ended without them",
+            _AUDIO_DATA_HANDLER_TIMEOUT_SECS,
+        )
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -257,6 +291,7 @@ class RoarkObserver(BaseObserver):
         self._first_speaker: Literal["assistant", "user"] | None = None
         self._started_posted = False
         self._end_flushed = False
+        self._recording_closed = False
         self._call_ended_task: asyncio.Task[None] | None = None
 
         # Pending assistant turn — text chunks streamed by TTS, flushed when the
@@ -629,7 +664,7 @@ class RoarkObserver(BaseObserver):
         _num_channels: int,
     ) -> None:
         """AudioBufferProcessor.on_audio_data subscriber — upload one chunk."""
-        if self._end_flushed or not audio:
+        if self._recording_closed or not audio:
             return
         idx = self._chunk_index
         self._chunk_index = idx + 1
@@ -666,9 +701,17 @@ class RoarkObserver(BaseObserver):
             await abp.stop_recording()
         except Exception as err:  # pragma: no cover — defensive
             log.warning("AudioBufferProcessor.stop_recording failed: %r", err)
+        # stop_recording() hands the tail to on_audio_data handlers that Pipecat
+        # runs as background tasks, so the final chunk's upload has not been
+        # scheduled yet when it returns. Wait for those handlers, or the posted
+        # recording ends at the last full chunk.
+        await _await_audio_data_handlers(abp)
 
         if self._inflight_uploads:
             await asyncio.gather(*list(self._inflight_uploads), return_exceptions=True)
+        # The recording is complete; audio arriving after this point belongs
+        # to no chunk the call-ended payload accounts for.
+        self._recording_closed = True
 
         ended_iso = _utc_now_iso()
         payload: CallEndedPayload = {
