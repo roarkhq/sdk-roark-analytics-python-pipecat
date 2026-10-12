@@ -6,6 +6,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-12
+
+### Fixed
+
+- Assistant turns from realtime speech-to-speech services (OpenAI Realtime, Gemini
+  Live, Ultravox and others) are no longer split mid-word. These services stream
+  the words they speak as deltas that carry their own spacing and mark them with
+  `includes_inter_frame_spaces`, and the observer put a space between every delta,
+  so "Copperline" was stored as "Copper line" and "BW-88" as "BW - 88". Chunks are
+  now joined the way Pipecat joins them into the LLM context.
+- Each tool call is recorded once. Pipecat broadcasts a tool call and its result
+  both upstream and downstream as two frames, and the observer recorded both, so
+  every call and result appeared twice in `toolCalls`.
+
 ## [0.2.4] - 2026-10-07
 
 ### Fixed

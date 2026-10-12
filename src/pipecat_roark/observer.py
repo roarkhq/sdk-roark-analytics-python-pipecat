@@ -87,6 +87,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger("pipecat_roark.observer")
 
+# A transcript text chunk, and whether it already carries its own spacing.
+_TextChunk = tuple[str, bool]
+
 
 _output_transport_type: type | None = None
 
@@ -303,8 +306,8 @@ class RoarkObserver(BaseObserver):
         # so the words it releases are the words the caller heard. Those are
         # what the transcript records; the words as generated are kept only for
         # a pipeline whose text never passes through an output transport.
-        self._assistant_text_parts: list[str] = []
-        self._assistant_generated_parts: list[str] = []
+        self._assistant_text_parts: list[_TextChunk] = []
+        self._assistant_generated_parts: list[_TextChunk] = []
         self._generated_text_ids: set[int] = set()
         self._played_text_ids: set[int] = set()
         # Set by the first frame an output transport pushes (its StartFrame, at
@@ -324,7 +327,7 @@ class RoarkObserver(BaseObserver):
         # trip happened — so gating on ``finalized`` silently drops most user
         # turns. Aggregating on speaking boundaries instead captures the full
         # turn for every STT without depending on that flag.
-        self._user_text_parts: list[str] = []
+        self._user_text_parts: list[_TextChunk] = []
         self._user_id: str | None = None
         self._user_language: str | None = None
 
@@ -392,6 +395,7 @@ class RoarkObserver(BaseObserver):
         # by frame id so each transcription/TTS/tool-call frame is acted on
         # exactly once — otherwise turns repeat ("Hello!Hello!Hello!").
         self._seen_frame_ids: set[int] = set()
+        self._invoked_tool_call_ids: set[str] = set()
 
     @property
     def pipecat_call_id(self) -> str:
@@ -506,6 +510,11 @@ class RoarkObserver(BaseObserver):
             if fid in self._seen_frame_ids:
                 return
             self._seen_frame_ids.add(fid)
+            # A broadcast frame (tool calls and their results among them) is
+            # pushed as two frames, one each way, carrying the same event.
+            sibling = getattr(frame, "broadcast_sibling_id", None)
+            if isinstance(sibling, int) and sibling in self._seen_frame_ids:
+                return
 
         # Speech-onset markers — capture the start edge of each turn so the
         # transcript timestamp lands where the audio actually begins.
@@ -757,6 +766,7 @@ class RoarkObserver(BaseObserver):
         self._transcript.clear()
         self._tool_calls.clear()
         self._seen_frame_ids.clear()
+        self._invoked_tool_call_ids.clear()
         self._generated_text_ids.clear()
         self._played_text_ids.clear()
 
@@ -764,8 +774,8 @@ class RoarkObserver(BaseObserver):
 
     def _accumulate_user_text(self, frame: object) -> None:
         try:
-            text = (getattr(frame, "text", "") or "").strip()
-            if not text:
+            text, spaced = _text_chunk(frame)
+            if not text.strip():
                 return
             if not self._user_text_parts:
                 # First segment of this turn. If no UserStartedSpeakingFrame was
@@ -777,7 +787,7 @@ class RoarkObserver(BaseObserver):
                         frame_ts if isinstance(frame_ts, str) and frame_ts else _utc_now_iso()
                     )
                     self._user_started_monotonic = self._now_monotonic()
-            self._user_text_parts.append(text)
+            self._user_text_parts.append((text if spaced else text.strip(), spaced))
             # Keep the latest non-empty user_id / language for the flushed turn.
             user_id = getattr(frame, "user_id", None)
             if isinstance(user_id, str) and user_id:
@@ -855,7 +865,7 @@ class RoarkObserver(BaseObserver):
             fid = getattr(frame, "id", None)
             if not isinstance(fid, int):
                 fid = id(frame)
-            text = getattr(frame, "text", "") or ""
+            chunk = _text_chunk(frame)
             if released:
                 if fid in self._played_text_ids:
                     return
@@ -866,7 +876,7 @@ class RoarkObserver(BaseObserver):
                     return
                 self._generated_text_ids.add(fid)
                 parts = self._assistant_generated_parts
-            if not text:
+            if not chunk[0]:
                 return
             if released and not self._assistant_text_parts:
                 self._assistant_start_iso = _utc_now_iso()
@@ -874,7 +884,7 @@ class RoarkObserver(BaseObserver):
             elif not self._assistant_text_parts and not self._assistant_generated_parts:
                 self._assistant_start_iso = _utc_now_iso()
                 self._assistant_start_monotonic = self._now_monotonic()
-            parts.append(text)
+            parts.append(chunk)
         except Exception as err:  # pragma: no cover — defensive
             log.warning("failed to accumulate assistant text: %r", err)
 
@@ -957,11 +967,17 @@ class RoarkObserver(BaseObserver):
 
     def _record_tool_invocation(self, frame: object) -> None:
         try:
+            tool_call_id = str(getattr(frame, "tool_call_id", "") or "")
+            # One invocation per tool call id, for a Pipecat that pushes both
+            # broadcast copies without linking them. Assumes ids are unique per
+            # call, as LLM providers issue them.
+            if tool_call_id and tool_call_id in self._invoked_tool_call_ids:
+                return
             entry = cast(
                 ToolCallMessage,
                 {
                     "kind": "tool_call",
-                    "toolCallId": str(getattr(frame, "tool_call_id", "") or ""),
+                    "toolCallId": tool_call_id,
                     "name": str(getattr(frame, "function_name", "") or ""),
                     "arguments": _arguments_to_json_string(getattr(frame, "arguments", None)),
                     "timestamp": _utc_now_iso(),
@@ -970,6 +986,8 @@ class RoarkObserver(BaseObserver):
             offset_ms = self._audio_offset_ms()
             if offset_ms is not None:
                 entry["audioOffsetMs"] = offset_ms
+            if tool_call_id:
+                self._invoked_tool_call_ids.add(tool_call_id)
             self._tool_calls.append(entry)
             log.info(
                 "tool_call captured: name=%s toolCallId=%s",
@@ -1012,20 +1030,39 @@ class RoarkObserver(BaseObserver):
         return "unknown"
 
 
-def _join_text_chunks(parts: list[str]) -> str:
-    """Join transcript text chunks with a single space between non-empty parts.
+def _text_chunk(frame: object) -> _TextChunk:
+    """A text frame's text, and whether it already carries its spacing.
 
-    Used for both ``TTSTextFrame.text`` (assistant) and ``TranscriptionFrame.text``
-    (user) segments. Each chunk is already aggregated (sentence / utterance) and
-    fully spaced internally — we only need to separate consecutive chunks.
+    Realtime speech-to-speech services stream the words they speak as deltas
+    that carry their own spaces (``"Copper"``, ``"line"``, ``" Care"``) and set
+    ``includes_inter_frame_spaces``; TTS services and STTs emit whole words or
+    segments that need a space between them.
+    """
+    text = getattr(frame, "text", "") or ""
+    return text, bool(getattr(frame, "includes_inter_frame_spaces", False))
+
+
+def _join_text_chunks(parts: list[_TextChunk]) -> str:
+    """Join transcript chunks the way Pipecat joins them into the LLM context.
+
+    Chunks that carry their own spacing are concatenated as they are; chunks
+    that do not get a single space between them, and a space is added where
+    one kind follows the other unless either side already has one.
     """
     result = ""
-    for text in parts:
+    previous_spaced = False
+    for text, spaced in parts:
         if not text:
             continue
-        if result and not result.endswith(" ") and not text.startswith(" "):
+        if (
+            result
+            and not (spaced and previous_spaced)
+            and not result[-1].isspace()
+            and not text[0].isspace()
+        ):
             result += " "
         result += text
+        previous_spaced = spaced
     return result
 
 

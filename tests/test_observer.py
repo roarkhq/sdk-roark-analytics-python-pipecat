@@ -40,6 +40,7 @@ from pipecat.observers.base_observer import FramePushed  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 from pipecat_roark.observer import RoarkObserver as _RoarkObserver  # noqa: E402
+from pipecat_roark.observer import _join_text_chunks  # noqa: E402
 
 RoarkObserver = partial(_RoarkObserver, runner_args=SimpleNamespace())
 
@@ -839,6 +840,121 @@ async def test_tool_call_string_arguments_pass_through_verbatim() -> None:
     # Fire-and-forget tool with no result emitted: only the invocation lands.
     assert len(tool_calls) == 1
     assert tool_calls[0]["arguments"] == '{"reason":"done"}'
+
+
+def _broadcast(frame_cls: type, **kwargs: Any) -> list[Any]:
+    """The two frames Pipecat's ``broadcast_frame`` pushes for one event."""
+    downstream, upstream = frame_cls(**kwargs), frame_cls(**kwargs)
+    downstream.broadcast_sibling_id = upstream.id
+    upstream.broadcast_sibling_id = downstream.id
+    return [downstream, upstream]
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_tool_call_is_recorded_once() -> None:
+    """Pipecat broadcasts a tool call and its result both ways; the observer
+    sees each copy, at every hop, and must record the call and its result once."""
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    call = dict(function_name="lookup_account", tool_call_id="call_1", arguments={"id": "7"})
+    for frame in _broadcast(FunctionCallInProgressFrame, **call):
+        for _hop in range(2):
+            await obs.on_push_frame(_push(frame))
+    for frame in _broadcast(FunctionCallResultFrame, **call, result={"ok": True}):
+        for _hop in range(2):
+            await obs.on_push_frame(_push(frame))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    tool_calls = fake.ended[0]["toolCalls"]
+    assert [(t["kind"], t["toolCallId"]) for t in tool_calls] == [
+        ("tool_call", "call_1"),
+        ("tool_result", "call_1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_id_is_invoked_once_without_broadcast_links() -> None:
+    """A Pipecat that broadcasts without linking the two copies still records
+    one invocation per tool call id."""
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    for _copy in range(2):
+        await obs.on_push_frame(
+            _push(
+                FunctionCallInProgressFrame(
+                    function_name="lookup_account", tool_call_id="call_1", arguments={}
+                )
+            )
+        )
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert [t["toolCallId"] for t in fake.ended[0]["toolCalls"]] == ["call_1"]
+
+
+def _spoken_delta(text: str) -> TTSTextFrame:
+    """A word delta as a realtime speech-to-speech service streams it."""
+    frame = TTSTextFrame(text=text, aggregated_by="word")
+    frame.includes_inter_frame_spaces = True
+    return frame
+
+
+@pytest.mark.asyncio
+async def test_realtime_deltas_are_joined_as_the_service_spoke_them() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    deltas = ["Your", " plan", " is", " Copper", "line", " Care", ", code", " BW", "-", "88", "."]
+    for delta in deltas:
+        await obs.on_push_frame(_push(_spoken_delta(delta)))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    for word in ["Thanks,", "that", "helps."]:
+        await obs.on_push_frame(_push(TTSTextFrame(text=word, aggregated_by="word")))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert [m["content"] for m in fake.ended[0]["transcript"]] == [
+        "Your plan is Copperline Care, code BW-88.",
+        "Thanks, that helps.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("parts", "joined"),
+    [
+        ([("Hello", False), ("there.", False)], "Hello there."),
+        ([("Copper", True), ("line", True), (" Care", True)], "Copperline Care"),
+        ([("Okay.", False), ("Your", True), (" plan", True)], "Okay. Your plan"),
+        ([("Your", True), (" plan", True), ("Thanks.", False)], "Your plan Thanks."),
+        ([("Your plan ", True), ("Thanks.", False)], "Your plan Thanks."),
+        ([("", False), ("Hi", False), ("", True)], "Hi"),
+    ],
+)
+def test_join_text_chunks(parts: list[tuple[str, bool]], joined: str) -> None:
+    assert _join_text_chunks(parts) == joined
+
+
+@pytest.mark.asyncio
+async def test_spaced_user_transcript_deltas_keep_their_spacing() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    for text in ["My code is BW", "-88", " please."]:
+        frame = _user_frame(text)
+        frame.includes_inter_frame_spaces = True
+        await obs.on_push_frame(_push(frame))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.ended[0]["transcript"][0]["content"] == "My code is BW-88 please."
 
 
 @pytest.mark.asyncio
