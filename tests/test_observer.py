@@ -841,6 +841,90 @@ async def test_tool_call_string_arguments_pass_through_verbatim() -> None:
     assert tool_calls[0]["arguments"] == '{"reason":"done"}'
 
 
+def _broadcast(frame_cls: type, **kwargs: Any) -> list[Any]:
+    """The two frames Pipecat's ``broadcast_frame`` pushes for one event."""
+    downstream, upstream = frame_cls(**kwargs), frame_cls(**kwargs)
+    downstream.broadcast_sibling_id = upstream.id
+    upstream.broadcast_sibling_id = downstream.id
+    return [downstream, upstream]
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_tool_call_is_recorded_once() -> None:
+    """Pipecat broadcasts a tool call and its result both ways; the observer
+    sees each copy, at every hop, and must record the call and its result once."""
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    call = dict(function_name="lookup_account", tool_call_id="call_1", arguments={"id": "7"})
+    for frame in _broadcast(FunctionCallInProgressFrame, **call):
+        for _hop in range(2):
+            await obs.on_push_frame(_push(frame))
+    for frame in _broadcast(FunctionCallResultFrame, **call, result={"ok": True}):
+        for _hop in range(2):
+            await obs.on_push_frame(_push(frame))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    tool_calls = fake.ended[0]["toolCalls"]
+    assert [(t["kind"], t["toolCallId"]) for t in tool_calls] == [
+        ("tool_call", "call_1"),
+        ("tool_result", "call_1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_id_is_invoked_once_without_broadcast_links() -> None:
+    """A Pipecat that broadcasts without linking the two copies still records
+    one invocation per tool call id."""
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    for _copy in range(2):
+        await obs.on_push_frame(
+            _push(
+                FunctionCallInProgressFrame(
+                    function_name="lookup_account", tool_call_id="call_1", arguments={}
+                )
+            )
+        )
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert [t["toolCallId"] for t in fake.ended[0]["toolCalls"]] == ["call_1"]
+
+
+def _spoken_delta(text: str) -> TTSTextFrame:
+    """A word delta as a realtime speech-to-speech service streams it."""
+    frame = TTSTextFrame(text=text, aggregated_by="word")
+    frame.includes_inter_frame_spaces = True
+    return frame
+
+
+@pytest.mark.asyncio
+async def test_realtime_deltas_are_joined_as_the_service_spoke_them() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    deltas = ["Your", " plan", " is", " Copper", "line", " Care", ", code", " BW", "-", "88", "."]
+    for delta in deltas:
+        await obs.on_push_frame(_push(_spoken_delta(delta)))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    for word in ["Thanks,", "that", "helps."]:
+        await obs.on_push_frame(_push(TTSTextFrame(text=word, aggregated_by="word")))
+    await obs.on_push_frame(_push(BotStoppedSpeakingFrame()))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert [m["content"] for m in fake.ended[0]["transcript"]] == [
+        "Your plan is Copperline Care, code BW-88.",
+        "Thanks, that helps.",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_audio_buffer_processor_drives_chunk_uploads() -> None:
     abp = _FakeAudioBufferProcessor(sample_rate=24000, num_channels=2)
