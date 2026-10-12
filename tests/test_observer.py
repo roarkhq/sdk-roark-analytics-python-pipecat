@@ -40,6 +40,7 @@ from pipecat.observers.base_observer import FramePushed  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 from pipecat_roark.observer import RoarkObserver as _RoarkObserver  # noqa: E402
+from pipecat_roark.observer import _join_text_chunks  # noqa: E402
 
 RoarkObserver = partial(_RoarkObserver, runner_args=SimpleNamespace())
 
@@ -923,6 +924,37 @@ async def test_realtime_deltas_are_joined_as_the_service_spoke_them() -> None:
         "Your plan is Copperline Care, code BW-88.",
         "Thanks, that helps.",
     ]
+
+
+@pytest.mark.parametrize(
+    ("parts", "joined"),
+    [
+        ([("Hello", False), ("there.", False)], "Hello there."),
+        ([("Copper", True), ("line", True), (" Care", True)], "Copperline Care"),
+        ([("Okay.", False), ("Your", True), (" plan", True)], "Okay. Your plan"),
+        ([("Your", True), (" plan", True), ("Thanks.", False)], "Your plan Thanks."),
+        ([("Your plan ", True), ("Thanks.", False)], "Your plan Thanks."),
+        ([("", False), ("Hi", False), ("", True)], "Hi"),
+    ],
+)
+def test_join_text_chunks(parts: list[tuple[str, bool]], joined: str) -> None:
+    assert _join_text_chunks(parts) == joined
+
+
+@pytest.mark.asyncio
+async def test_spaced_user_transcript_deltas_keep_their_spacing() -> None:
+    obs = RoarkObserver(api_key="rk_test", agent_id="agent-1")
+    fake = _FakeClient()
+    obs._client = fake  # type: ignore[assignment]
+
+    await obs.on_pipeline_started()
+    for text in ["My code is BW", "-88", " please."]:
+        frame = _user_frame(text)
+        frame.includes_inter_frame_spaces = True
+        await obs.on_push_frame(_push(frame))
+    await obs.on_push_frame(_push(EndFrame()))
+
+    assert fake.ended[0]["transcript"][0]["content"] == "My code is BW-88 please."
 
 
 @pytest.mark.asyncio

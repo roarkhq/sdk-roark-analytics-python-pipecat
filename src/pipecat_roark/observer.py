@@ -774,11 +774,9 @@ class RoarkObserver(BaseObserver):
 
     def _accumulate_user_text(self, frame: object) -> None:
         try:
-            chunk = _text_chunk(frame)
-            if not chunk[0].strip():
+            text, spaced = _text_chunk(frame)
+            if not text.strip():
                 return
-            if not chunk[1]:
-                chunk = (chunk[0].strip(), False)
             if not self._user_text_parts:
                 # First segment of this turn. If no UserStartedSpeakingFrame was
                 # seen (pipeline without VAD onset frames), fall back to the
@@ -789,7 +787,7 @@ class RoarkObserver(BaseObserver):
                         frame_ts if isinstance(frame_ts, str) and frame_ts else _utc_now_iso()
                     )
                     self._user_started_monotonic = self._now_monotonic()
-            self._user_text_parts.append(chunk)
+            self._user_text_parts.append((text if spaced else text.strip(), spaced))
             # Keep the latest non-empty user_id / language for the flushed turn.
             user_id = getattr(frame, "user_id", None)
             if isinstance(user_id, str) and user_id:
@@ -971,11 +969,10 @@ class RoarkObserver(BaseObserver):
         try:
             tool_call_id = str(getattr(frame, "tool_call_id", "") or "")
             # One invocation per tool call id, for a Pipecat that pushes both
-            # broadcast copies without linking them.
-            if tool_call_id:
-                if tool_call_id in self._invoked_tool_call_ids:
-                    return
-                self._invoked_tool_call_ids.add(tool_call_id)
+            # broadcast copies without linking them. Assumes ids are unique per
+            # call, as LLM providers issue them.
+            if tool_call_id and tool_call_id in self._invoked_tool_call_ids:
+                return
             entry = cast(
                 ToolCallMessage,
                 {
@@ -989,6 +986,8 @@ class RoarkObserver(BaseObserver):
             offset_ms = self._audio_offset_ms()
             if offset_ms is not None:
                 entry["audioOffsetMs"] = offset_ms
+            if tool_call_id:
+                self._invoked_tool_call_ids.add(tool_call_id)
             self._tool_calls.append(entry)
             log.info(
                 "tool_call captured: name=%s toolCallId=%s",
